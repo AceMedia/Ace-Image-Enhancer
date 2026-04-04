@@ -732,10 +732,6 @@ class Ace_Image_Enhancer {
 
         $target = ($format === 'avif' && extension_loaded('gd') && function_exists('imageavif')) ? 'avif' : 'webp';
 
-        if ($ext === $target) {
-            return ['status' => 'skipped', 'reason' => 'already_converted', 'id' => $attachment_id];
-        }
-
         if (!in_array($ext, ['jpg', 'jpeg', 'png', 'gif', 'bmp'], true)) {
             return ['status' => 'skipped', 'reason' => 'unsupported_type', 'id' => $attachment_id];
         }
