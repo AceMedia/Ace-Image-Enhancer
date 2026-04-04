@@ -419,11 +419,6 @@ class Ace_Image_Enhancer {
                             <p class="description">Leave blank for all dates.</p></td>
                         </tr>
                         <tr>
-                            <th>Batch size</th>
-                            <td><input type="number" id="ace-batch-size" value="<?php echo esc_attr($size); ?>" min="1" max="200">
-                            <p class="description">Images processed per request.</p></td>
-                        </tr>
-                        <tr>
                             <th>Overwrite</th>
                             <td><label><input type="checkbox" id="ace-overwrite" <?php checked($over); ?>>
                             Re-convert images that already have a <?php echo esc_html(strtoupper($format)); ?> version</label></td>

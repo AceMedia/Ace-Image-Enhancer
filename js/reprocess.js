@@ -13,6 +13,35 @@
         failed:    0,
     };
 
+    var STORAGE_KEY = 'ace_image_reprocess_state';
+
+    function saveState() {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    }
+
+    function loadState() {
+        var saved = localStorage.getItem(STORAGE_KEY);
+        if (saved) {
+            try {
+                var loaded = JSON.parse(saved);
+                Object.assign(state, loaded);
+                // Update UI
+                setProgress(state.processed, state.skipped, state.failed, state.total);
+                setRunning(state.running);
+                if (state.paused) {
+                    el.resumeBtn.style.display = '';
+                    el.pauseBtn.style.display = 'none';
+                }
+            } catch (e) {
+                // Ignore
+            }
+        }
+    }
+
+    function clearState() {
+        localStorage.removeItem(STORAGE_KEY);
+    }
+
     // DOM refs (populated in init)
     var el = {};
 
@@ -28,7 +57,7 @@
         var params = {
             file_types: getSelectedTypes(),
             date_after: el.dateFilter.value,
-            batch_size: parseInt(el.batchSize.value, 10) || 25,
+            batch_size: 1,
             overwrite:  el.overwrite.checked,
         };
         return Object.assign(params, extra || {});
@@ -63,6 +92,7 @@
             '  |  Failed: ' + failed +
             '  |  Total: ' + total +
             ' (' + pct + '%)';
+        saveState();
     }
 
     function appendLog(entries) {
@@ -122,6 +152,7 @@
                 el.startBtn.textContent = 'Start reprocessing';
                 el.resumeBtn.style.display = 'none';
                 appendLog([{ status: 'processed', title: '— Done. ' + state.processed + ' converted, ' + state.skipped + ' skipped, ' + state.failed + ' failed.' }]);
+                clearState();
             } else {
                 runBatch();
             }
@@ -145,6 +176,7 @@
         state.skipped   = 0;
         state.failed    = 0;
 
+        clearState();
         el.log.innerHTML = '';
         el.startBtn.disabled    = true;
         el.startBtn.textContent = 'Running…';
@@ -157,12 +189,14 @@
         state.paused = true;
         el.pauseBtn.style.display  = 'none';
         el.resumeBtn.style.display = '';
+        saveState();
     }
 
     function handleResume() {
         state.paused = false;
         el.resumeBtn.style.display = 'none';
         el.pauseBtn.style.display  = '';
+        saveState();
         runBatch();
     }
 
@@ -199,15 +233,22 @@
         el.countBtn     = document.getElementById('ace-count-btn');
         el.countResult  = document.getElementById('ace-count-result');
         el.dateFilter   = document.getElementById('ace-filter-date');
-        el.batchSize    = document.getElementById('ace-batch-size');
         el.overwrite    = document.getElementById('ace-overwrite');
 
         if (!el.startBtn) return; // not on batch page
+
+        loadState();
 
         el.startBtn.addEventListener('click', handleStart);
         el.pauseBtn.addEventListener('click', handlePause);
         el.resumeBtn.addEventListener('click', handleResume);
         el.countBtn.addEventListener('click', handleCount);
+
+        window.addEventListener('beforeunload', function() {
+            if (state.running && !state.paused) {
+                handlePause();
+            }
+        });
     }
 
     if (document.readyState === 'loading') {
