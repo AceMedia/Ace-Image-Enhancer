@@ -954,6 +954,52 @@ class Ace_Image_Enhancer {
         return rest_ensure_response(array_merge(['success' => $result['status'] === 'processed'], $result));
     }
 
+    private function collect_image_ids_from_blocks(array $blocks, array &$image_ids): void {
+        foreach ($blocks as $block) {
+            if (!is_array($block)) {
+                continue;
+            }
+
+            $block_name = isset($block['blockName']) ? (string) $block['blockName'] : '';
+            $attrs = isset($block['attrs']) && is_array($block['attrs']) ? $block['attrs'] : [];
+
+            switch ($block_name) {
+                case 'core/image':
+                case 'core/cover':
+                case 'core/file':
+                    if (!empty($attrs['id'])) {
+                        $image_ids[] = (int) $attrs['id'];
+                    }
+                    break;
+
+                case 'core/media-text':
+                    if (!empty($attrs['mediaId'])) {
+                        $image_ids[] = (int) $attrs['mediaId'];
+                    }
+                    break;
+
+                case 'core/gallery':
+                    if (!empty($attrs['ids']) && is_array($attrs['ids'])) {
+                        foreach ($attrs['ids'] as $gallery_id) {
+                            $image_ids[] = (int) $gallery_id;
+                        }
+                    }
+                    if (!empty($attrs['images']) && is_array($attrs['images'])) {
+                        foreach ($attrs['images'] as $image) {
+                            if (is_array($image) && !empty($image['id'])) {
+                                $image_ids[] = (int) $image['id'];
+                            }
+                        }
+                    }
+                    break;
+            }
+
+            if (!empty($block['innerBlocks']) && is_array($block['innerBlocks'])) {
+                $this->collect_image_ids_from_blocks($block['innerBlocks'], $image_ids);
+            }
+        }
+    }
+
     public function rest_batch_from_content(\WP_REST_Request $request): \WP_REST_Response {
         $post_count = (int) $request->get_param('post_count');
         $include_pages = (bool) $request->get_param('include_pages');
@@ -985,6 +1031,11 @@ class Ace_Image_Enhancer {
             // Get images from content
             $content = get_post_field('post_content', $post_id);
             if ($content) {
+                $blocks = parse_blocks($content);
+                if (!empty($blocks)) {
+                    $this->collect_image_ids_from_blocks($blocks, $image_ids);
+                }
+
                 // Find all image IDs in content (from img tags and gallery shortcodes)
                 preg_match_all('/wp-image-(\d+)/', $content, $matches);
                 if (!empty($matches[1])) {
@@ -1006,11 +1057,8 @@ class Ace_Image_Enhancer {
 
         foreach ($image_ids as $id) {
             $file = get_attached_file($id);
-            if ($file && file_exists($file)) {
-                $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
-                if (in_array($ext, ['jpg', 'jpeg', 'png', 'gif', 'bmp'], true)) {
-                    $valid_images[] = $id;
-                }
+            if ($file && file_exists($file) && $this->resolve_reprocess_source_file($file)) {
+                $valid_images[] = $id;
             }
         }
 
