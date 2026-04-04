@@ -658,6 +658,7 @@ class Ace_Image_Enhancer {
             'gif'  => 'image/gif',
             'bmp'  => 'image/bmp',
             'webp' => 'image/webp',
+            'avif' => 'image/avif',
         ];
         $mimes = [];
         foreach ($types as $t) {
@@ -680,6 +681,10 @@ class Ace_Image_Enhancer {
         ];
         $args  = wp_parse_args($args, $defaults);
         $mimes = $this->types_to_mimes($args['file_types']);
+
+        if ($args['overwrite']) {
+            $mimes = array_values(array_unique(array_merge($mimes, ['image/webp', 'image/avif'])));
+        }
 
         if (empty($mimes)) {
             return $args['count_only'] ? ['count' => 0] : [];
@@ -725,6 +730,48 @@ class Ace_Image_Enhancer {
         return array_values($ids);
     }
 
+    private function resolve_reprocess_source_file(string $file): ?string {
+        if ($file === '' || !file_exists($file)) {
+            return null;
+        }
+
+        $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
+        if (in_array($ext, ['jpg', 'jpeg', 'png', 'gif', 'bmp'], true)) {
+            return $file;
+        }
+
+        if (!in_array($ext, ['webp', 'avif'], true)) {
+            return null;
+        }
+
+        foreach (['jpg', 'jpeg', 'png', 'gif', 'bmp'] as $candidate_ext) {
+            $candidate = preg_replace('/\.[a-z0-9]+$/i', '.' . $candidate_ext, $file);
+            if ($candidate && file_exists($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return $file;
+    }
+
+    private function prepare_reprocess_destination(string $source_file, string $target_file): array {
+        $save_file = $target_file;
+        $replace_after_save = false;
+
+        $source_real = realpath($source_file);
+        $target_real = file_exists($target_file) ? realpath($target_file) : false;
+        if ($source_real && $target_real && $source_real === $target_real) {
+            $save_file = preg_replace('/\.[a-z0-9]+$/i', '.ace-reprocess-tmp.' . strtolower(pathinfo($target_file, PATHINFO_EXTENSION)), $target_file);
+            $replace_after_save = true;
+        }
+
+        return [
+            'save_file' => $save_file,
+            'target_file' => $target_file,
+            'replace_after_save' => $replace_after_save,
+        ];
+    }
+
     /** Convert a single attachment to the configured format. */
     private function convert_attachment_to_format(int $attachment_id): array {
         $file = get_attached_file($attachment_id);
@@ -741,25 +788,31 @@ class Ace_Image_Enhancer {
 
         $target = ($format === 'avif' && extension_loaded('gd') && function_exists('imageavif')) ? 'avif' : 'webp';
 
-        if (!in_array($ext, ['jpg', 'jpeg', 'png', 'gif', 'bmp'], true)) {
+        $source_file = $this->resolve_reprocess_source_file($file);
+        if (!$source_file) {
             return ['status' => 'skipped', 'reason' => 'unsupported_type', 'id' => $attachment_id];
         }
 
         $upload_dir = wp_upload_dir();
         $mime_type  = 'image/' . $target;
         $dest       = preg_replace('/\.[a-z]+$/i', '.' . $target, $file);
+        $destination = $this->prepare_reprocess_destination($source_file, $dest);
 
         // --- Convert main file ---
-        $image = wp_get_image_editor($file);
+        $image = wp_get_image_editor($source_file);
         if (is_wp_error($image)) {
             return ['status' => 'failed', 'reason' => $image->get_error_message(), 'id' => $attachment_id];
         }
         $image->set_quality($this->get_option('image_quality'));
-        $saved = $image->save($dest, $mime_type);
+        $saved = $image->save($destination['save_file'], $mime_type);
         unset($image); // free GD resource immediately — do not wait for GC
 
         if (is_wp_error($saved)) {
             return ['status' => 'failed', 'reason' => $saved->get_error_message(), 'id' => $attachment_id];
+        }
+
+        if ($destination['replace_after_save']) {
+            @rename($destination['save_file'], $destination['target_file']);
         }
 
         // --- Convert existing thumbnail sizes in-place ---
@@ -774,23 +827,28 @@ class Ace_Image_Enhancer {
         if (!empty($meta['sizes'])) {
             foreach ($meta['sizes'] as $size_name => $size_data) {
                 $old_thumb = $dir . $size_data['file'];
-                if (!file_exists($old_thumb)) {
+                $thumb_source = $this->resolve_reprocess_source_file($old_thumb);
+                if (!$thumb_source) {
                     continue;
                 }
                 $new_thumb = preg_replace('/\.[a-z]+$/i', '.' . $target, $old_thumb);
-                $thumb_img = wp_get_image_editor($old_thumb);
+                $thumb_destination = $this->prepare_reprocess_destination($thumb_source, $new_thumb);
+                $thumb_img = wp_get_image_editor($thumb_source);
                 if (is_wp_error($thumb_img)) {
                     continue;
                 }
                 $thumb_img->set_quality($this->get_option('image_quality'));
-                $thumb_saved = $thumb_img->save($new_thumb, $mime_type);
+                $thumb_saved = $thumb_img->save($thumb_destination['save_file'], $mime_type);
                 unset($thumb_img); // free immediately
 
                 if (!is_wp_error($thumb_saved)) {
-                    if (!$this->get_option('keep_originals') && $old_thumb !== $new_thumb) {
-                        @unlink($old_thumb);
+                    if ($thumb_destination['replace_after_save']) {
+                        @rename($thumb_destination['save_file'], $thumb_destination['target_file']);
                     }
-                    $meta['sizes'][$size_name]['file']      = basename($new_thumb);
+                    if (!$this->get_option('keep_originals') && $thumb_source !== $thumb_destination['target_file'] && file_exists($thumb_source)) {
+                        @unlink($thumb_source);
+                    }
+                    $meta['sizes'][$size_name]['file']      = basename($thumb_destination['target_file']);
                     $meta['sizes'][$size_name]['mime-type'] = $mime_type;
                 }
             }
@@ -806,8 +864,8 @@ class Ace_Image_Enhancer {
         wp_update_post(['ID' => $attachment_id, 'post_mime_type' => $mime_type]);
 
         // --- Optionally delete original main file ---
-        if (!$this->get_option('keep_originals') && $file !== $dest && file_exists($file)) {
-            @unlink($file);
+        if (!$this->get_option('keep_originals') && $source_file !== $dest && file_exists($source_file)) {
+            @unlink($source_file);
         }
 
         // Nudge GC between images so fragmented GD heap is released before next iteration
@@ -1501,7 +1559,7 @@ class Ace_Image_Enhancer {
             $can_reprocess = ($format !== 'original');
 
             $reprocess_btn = $can_reprocess
-                ? sprintf('<button type="button" class="button ace-reprocess-btn" data-id="%d">Convert to %s</button>',
+                ? sprintf('<button type="button" class="button ace-reprocess-btn" data-id="%d">Reprocess to %s</button>',
                     $id, esc_attr(strtoupper($format)))
                 : '<span class="description">Set a format in Image Enhancer settings to enable reprocessing.</span>';
 

@@ -38,14 +38,13 @@
         if (!id) return;
 
         btn.classList.add('is-busy');
-        btn.textContent = 'Converting…';
+        btn.textContent = 'Reprocessing...';
 
         apiFetch('reprocess-single', { attachment_id: parseInt(id, 10) }).then(function (data) {
             btn.classList.remove('is-busy');
             if (data && data.success) {
                 btn.classList.add('is-done');
-                btn.textContent = 'Converted to ' + aceAttachTools.format + ' ✓';
-                btn.disabled = true;
+                btn.textContent = 'Reprocessed to ' + aceAttachTools.format + ' ✓';
             } else {
                 btn.textContent = 'Failed — ' + (data && data.reason ? data.reason : 'error');
             }
