@@ -11,6 +11,9 @@
         processed: 0,
         skipped:   0,
         failed:    0,
+        contentMode: false,
+        contentImageIds: null,
+        contentParams: null,
     };
 
     var STORAGE_KEY = 'ace_image_reprocess_state';
@@ -132,6 +135,11 @@
     }
 
     function runBatch() {
+        if (state.contentMode) {
+            runContentBatch();
+            return;
+        }
+
         if (!state.running || state.paused) return;
 
         var params = buildParams({ offset: state.offset });
@@ -175,6 +183,9 @@
         state.processed = 0;
         state.skipped   = 0;
         state.failed    = 0;
+        state.contentMode = false;
+        state.contentImageIds = null;
+        state.contentParams = null;
 
         clearState();
         el.log.innerHTML = '';
@@ -223,6 +234,109 @@
         });
     }
 
+    function handleContentPreview() {
+        el.contentPreviewResult.textContent = 'Loading…';
+        el.contentStartBtn.style.display = 'none';
+
+        var params = {
+            post_count: parseInt(el.contentCount.value, 10) || 100,
+            include_pages: el.includePages.checked,
+        };
+
+        apiFetch('batch-from-content?' + new URLSearchParams(params).toString()).then(function (data) {
+            el.contentPreviewResult.textContent = data.count + ' unique image' + (data.count === 1 ? '' : 's') + ' found in ' + data.post_count + ' recent post' + (data.post_count === 1 ? '' : 's') + '/page' + (data.post_count === 1 ? '' : 's');
+            if (data.count > 0) {
+                el.contentStartBtn.style.display = '';
+            }
+        }).catch(function (err) {
+            el.contentPreviewResult.textContent = 'Error: ' + err.message;
+        });
+    }
+
+    function handleContentStart() {
+        if (getSelectedTypes().length === 0) {
+            alert('Please select at least one file type.');
+            return;
+        }
+
+        // Set up state for content-based processing
+        state.running   = true;
+        state.paused    = false;
+        state.offset    = 0;
+        state.total     = 0;
+        state.processed = 0;
+        state.skipped   = 0;
+        state.failed    = 0;
+        state.contentMode = true;
+        state.contentParams = {
+            post_count: parseInt(el.contentCount.value, 10) || 100,
+            include_pages: el.includePages.checked,
+        };
+
+        clearState();
+        el.log.innerHTML = '';
+        el.contentStartBtn.disabled = true;
+        el.contentStartBtn.textContent = 'Running…';
+        setRunning(true);
+        setProgress(0, 0, 0, 0);
+
+        // First get the image IDs from content
+        apiFetch('batch-from-content?' + new URLSearchParams(state.contentParams).toString()).then(function (data) {
+            state.contentImageIds = data.image_ids;
+            state.total = data.count;
+            setProgress(0, 0, 0, state.total);
+            runContentBatch();
+        }).catch(function (err) {
+            setRunning(false);
+            el.contentStartBtn.disabled = false;
+            el.contentStartBtn.textContent = 'Start Reprocessing from Content';
+            appendLog([{ status: 'failed', title: 'Error getting content images: ' + err.message, reason: '' }]);
+        });
+    }
+
+    function runContentBatch() {
+        if (!state.running || state.paused || !state.contentImageIds) return;
+
+        var batchSize = 1; // Process one at a time
+        var batch = state.contentImageIds.slice(state.offset, state.offset + batchSize);
+
+        if (batch.length === 0) {
+            // Done
+            setRunning(false);
+            el.contentStartBtn.disabled = false;
+            el.contentStartBtn.textContent = 'Start Reprocessing from Content';
+            appendLog([{ status: 'processed', title: '— Done. ' + state.processed + ' converted, ' + state.skipped + ' skipped, ' + state.failed + ' failed.' }]);
+            clearState();
+            return;
+        }
+
+        // Process each image in the batch
+        var promises = batch.map(function(id) {
+            return apiFetch('reprocess-single', 'POST', { attachment_id: id }).then(function (result) {
+                var status = result.success ? 'processed' : (result.status || 'skipped');
+                if (status === 'processed') state.processed++;
+                else if (status === 'skipped') state.skipped++;
+                else state.failed++;
+
+                appendLog([{
+                    status: status,
+                    title: result.title || '#' + id,
+                    reason: result.reason || '',
+                }]);
+                return result;
+            });
+        });
+
+        Promise.all(promises).then(function() {
+            state.offset += batch.length;
+            setProgress(state.processed, state.skipped, state.failed, state.total);
+            runContentBatch();
+        }).catch(function (err) {
+            setRunning(false);
+            appendLog([{ status: 'failed', title: 'Request error: ' + err.message, reason: '' }]);
+        });
+    }
+
     function init() {
         el.log          = document.getElementById('ace-log');
         el.bar          = document.getElementById('ace-progress-bar');
@@ -235,6 +349,13 @@
         el.dateFilter   = document.getElementById('ace-filter-date');
         el.overwrite    = document.getElementById('ace-overwrite');
 
+        // Content-based reprocessing elements
+        el.contentPreviewBtn = document.getElementById('ace-content-preview-btn');
+        el.contentPreviewResult = document.getElementById('ace-content-preview-result');
+        el.contentStartBtn = document.getElementById('ace-content-start-btn');
+        el.includePages = document.getElementById('ace-include-pages');
+        el.contentCount = document.getElementById('ace-content-count');
+
         if (!el.startBtn) return; // not on batch page
 
         loadState();
@@ -243,6 +364,14 @@
         el.pauseBtn.addEventListener('click', handlePause);
         el.resumeBtn.addEventListener('click', handleResume);
         el.countBtn.addEventListener('click', handleCount);
+
+        // Content-based events
+        if (el.contentPreviewBtn) {
+            el.contentPreviewBtn.addEventListener('click', handleContentPreview);
+        }
+        if (el.contentStartBtn) {
+            el.contentStartBtn.addEventListener('click', handleContentStart);
+        }
 
         window.addEventListener('beforeunload', function() {
             if (state.running && !state.paused) {

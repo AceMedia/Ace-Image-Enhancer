@@ -83,7 +83,6 @@ class Ace_Image_Enhancer {
             'enable_svg'             => true,
             'keep_originals'         => true,
             'enable_svg_editor'      => false,
-            'batch_default_size'     => 25,
             'batch_default_types'    => ['jpg', 'jpeg', 'png'],
             'batch_overwrite'        => false,
             'batch_default_date_after' => '',
@@ -173,14 +172,6 @@ class Ace_Image_Enhancer {
             'batch_default_types',
             'File Types to Reprocess',
             [$this, 'batch_types_field_callback'],
-            'ace-image-enhancer',
-            'ace_image_enhancer_batch'
-        );
-
-        add_settings_field(
-            'batch_default_size',
-            'Default Batch Size',
-            [$this, 'batch_size_field_callback'],
             'ace-image-enhancer',
             'ace_image_enhancer_batch'
         );
@@ -331,7 +322,6 @@ class Ace_Image_Enhancer {
             ? $input['batch_default_types']
             : [];
         $sanitized['batch_default_types']    = array_values(array_intersect($input_types, $allowed_types));
-        $sanitized['batch_default_size']     = max(1, min(200, intval($input['batch_default_size'] ?? 25)));
         $sanitized['batch_overwrite']        = !empty($input['batch_overwrite']);
         $sanitized['batch_default_date_after'] = sanitize_text_field($input['batch_default_date_after'] ?? '');
 
@@ -355,12 +345,6 @@ class Ace_Image_Enhancer {
         echo '<p class="description">File types to include when batch reprocessing.</p>';
     }
 
-    public function batch_size_field_callback() {
-        $value = $this->get_option('batch_default_size');
-        echo '<input type="number" name="ace_image_enhancer_options[batch_default_size]" value="' . esc_attr($value) . '" min="1" max="200" step="1">';
-        echo '<p class="description">How many images to process per batch request (1–200).</p>';
-    }
-
     public function batch_overwrite_field_callback() {
         $value = $this->get_option('batch_overwrite');
         echo '<label><input type="checkbox" name="ace_image_enhancer_options[batch_overwrite]" value="1" ' . checked($value, true, false) . '> Re-convert images that already have a WebP/AVIF version</label>';
@@ -382,7 +366,6 @@ class Ace_Image_Enhancer {
         }
         $opts   = $this->options;
         $types  = (array) $this->get_option('batch_default_types');
-        $size   = (int)   $this->get_option('batch_default_size');
         $over   = (bool)  $this->get_option('batch_overwrite');
         $after  = (string)$this->get_option('batch_default_date_after');
         $format = $this->get_option('image_format');
@@ -444,6 +427,27 @@ class Ace_Image_Enhancer {
                     <p id="ace-progress-text" style="margin-top:6px">—</p>
                     <div id="ace-log" class="ace-log"></div>
                 </div>
+            </div>
+
+            <div class="ace-reprocess-content-section" style="margin-top:20px;">
+                <h2>Quick Reprocess from Recent Content</h2>
+                <p>Reprocess images used in the most recent posts and pages. This automatically finds and deduplicates all images currently in use.</p>
+                <p>
+                    <label>
+                        <input type="checkbox" id="ace-include-pages" checked>
+                        Include pages (not just posts)
+                    </label>
+                    <label style="margin-left:20px">
+                        Number of recent posts/pages: <input type="number" id="ace-content-count" value="100" min="1" max="500" style="width:80px">
+                    </label>
+                </p>
+                <p>
+                    <button type="button" id="ace-content-preview-btn" class="button">Preview Images to Process</button>
+                    <span id="ace-content-preview-result" style="margin-left:10px;font-weight:600"></span>
+                </p>
+                <p>
+                    <button type="button" id="ace-content-start-btn" class="button button-primary" style="display:none">Start Reprocessing from Content</button>
+                </p>
             </div>
         </div>
         <?php
@@ -608,6 +612,16 @@ class Ace_Image_Enhancer {
                 'batch_size'  => ['type' => 'integer', 'default' => 25, 'minimum' => 1, 'maximum' => 200],
                 'offset'      => ['type' => 'integer', 'default' => 0,  'minimum' => 0],
                 'overwrite'   => ['type' => 'boolean', 'default' => false],
+            ],
+        ]);
+
+        register_rest_route($ns, '/batch-from-content', [
+            'methods'             => 'GET',
+            'callback'            => [$this, 'rest_batch_from_content'],
+            'permission_callback' => function() { return current_user_can('upload_files'); },
+            'args'                => [
+                'post_count' => ['type' => 'integer', 'default' => 100, 'minimum' => 1, 'maximum' => 500],
+                'include_pages' => ['type' => 'boolean', 'default' => true],
             ],
         ]);
 
@@ -882,6 +896,73 @@ class Ace_Image_Enhancer {
         return rest_ensure_response(array_merge(['success' => $result['status'] === 'processed'], $result));
     }
 
+    public function rest_batch_from_content(\WP_REST_Request $request): \WP_REST_Response {
+        $post_count = (int) $request->get_param('post_count');
+        $include_pages = (bool) $request->get_param('include_pages');
+
+        $post_types = ['post'];
+        if ($include_pages) {
+            $post_types[] = 'page';
+        }
+
+        // Get recent posts/pages
+        $posts = get_posts([
+            'post_type'      => $post_types,
+            'posts_per_page' => $post_count,
+            'post_status'    => 'publish',
+            'orderby'        => 'date',
+            'order'          => 'DESC',
+            'fields'         => 'ids',
+        ]);
+
+        $image_ids = [];
+
+        foreach ($posts as $post_id) {
+            // Get featured image
+            $featured_id = get_post_thumbnail_id($post_id);
+            if ($featured_id) {
+                $image_ids[] = $featured_id;
+            }
+
+            // Get images from content
+            $content = get_post_field('post_content', $post_id);
+            if ($content) {
+                // Find all image IDs in content (from img tags and gallery shortcodes)
+                preg_match_all('/wp-image-(\d+)/', $content, $matches);
+                if (!empty($matches[1])) {
+                    $image_ids = array_merge($image_ids, $matches[1]);
+                }
+
+                // Also check for gallery shortcodes
+                preg_match_all('/\[gallery.*ids="([^"]+)"/', $content, $gallery_matches);
+                foreach ($gallery_matches[1] as $ids_str) {
+                    $gallery_ids = explode(',', $ids_str);
+                    $image_ids = array_merge($image_ids, $gallery_ids);
+                }
+            }
+        }
+
+        // Deduplicate and validate
+        $image_ids = array_unique(array_map('intval', array_filter($image_ids)));
+        $valid_images = [];
+
+        foreach ($image_ids as $id) {
+            $file = get_attached_file($id);
+            if ($file && file_exists($file)) {
+                $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
+                if (in_array($ext, ['jpg', 'jpeg', 'png', 'gif', 'bmp'], true)) {
+                    $valid_images[] = $id;
+                }
+            }
+        }
+
+        return rest_ensure_response([
+            'count' => count($valid_images),
+            'image_ids' => array_values($valid_images),
+            'post_count' => count($posts),
+        ]);
+    }
+
     // ---------------------------------------------------------
     // Rename: file system + reference updates
     // ---------------------------------------------------------
@@ -1143,7 +1224,6 @@ class Ace_Image_Enhancer {
                 'nonce'      => wp_create_nonce('wp_rest'),
                 'format'     => strtoupper($this->get_option('image_format')),
                 'defaults'   => [
-                    'batch_size' => $this->get_option('batch_default_size'),
                     'types'      => $this->get_option('batch_default_types'),
                     'overwrite'  => $this->get_option('batch_overwrite'),
                     'date_after' => $this->get_option('batch_default_date_after'),
