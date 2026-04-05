@@ -301,10 +301,16 @@
         var batch = state.contentImageIds.slice(state.offset, state.offset + batchSize);
 
         if (batch.length === 0) {
-            // Done
+            // Done — reset whichever batch-mode button started this
             setRunning(false);
-            el.contentStartBtn.disabled = false;
-            el.contentStartBtn.textContent = 'Start Reprocessing from Content';
+            if (el.contentStartBtn) {
+                el.contentStartBtn.disabled = false;
+                el.contentStartBtn.textContent = 'Start Reprocessing from Content';
+            }
+            if (el.avatarStartBtn) {
+                el.avatarStartBtn.disabled = false;
+                el.avatarStartBtn.textContent = 'Reprocess Avatar Images';
+            }
             appendLog([{ status: 'processed', title: '— Done. ' + state.processed + ' converted, ' + state.skipped + ' skipped, ' + state.failed + ' failed.' }]);
             clearState();
             return;
@@ -337,6 +343,61 @@
         });
     }
 
+    function handleAvatarPreview() {
+        el.avatarPreviewResult.textContent = 'Loading…';
+        el.avatarStartBtn.style.display = 'none';
+
+        apiFetch('batch-from-avatars').then(function (data) {
+            if (data.count > 0) {
+                el.avatarPreviewResult.textContent = data.count + ' unique avatar image' + (data.count === 1 ? '' : 's') + ' found across ' + data.user_count + ' user' + (data.user_count === 1 ? '' : 's');
+                el.avatarStartBtn.style.display = '';
+            } else {
+                el.avatarPreviewResult.textContent = 'No media-library avatars found (Gravatar-only users are skipped).';
+            }
+        }).catch(function (err) {
+            el.avatarPreviewResult.textContent = 'Error: ' + err.message;
+        });
+    }
+
+    function handleAvatarStart() {
+        if (getSelectedTypes().length === 0) {
+            alert('Please select at least one file type.');
+            return;
+        }
+
+        state.running   = true;
+        state.paused    = false;
+        state.offset    = 0;
+        state.total     = 0;
+        state.processed = 0;
+        state.skipped   = 0;
+        state.failed    = 0;
+        state.contentMode = true; // reuse content-mode batch loop
+        state.contentParams = null;
+
+        clearState();
+        el.log.innerHTML = '';
+        el.avatarStartBtn.disabled = true;
+        el.avatarStartBtn.textContent = 'Running…';
+        setRunning(true);
+        setProgress(0, 0, 0, 0);
+
+        apiFetch('batch-from-avatars').then(function (data) {
+            state.contentImageIds = data.image_ids;
+            state.total = data.count;
+            setProgress(0, 0, 0, state.total);
+            runContentBatch();
+        }).catch(function (err) {
+            setRunning(false);
+            el.avatarStartBtn.disabled = false;
+            el.avatarStartBtn.textContent = 'Reprocess Avatar Images';
+            appendLog([{ status: 'failed', title: 'Error fetching avatar images: ' + err.message, reason: '' }]);
+        });
+    }
+
+    // Override runContentBatch completion to also reset avatar button
+    var _origRunContentBatch = null; // patched below after function definition
+
     function init() {
         el.log          = document.getElementById('ace-log');
         el.bar          = document.getElementById('ace-progress-bar');
@@ -356,6 +417,11 @@
         el.includePages = document.getElementById('ace-include-pages');
         el.contentCount = document.getElementById('ace-content-count');
 
+        // Avatar reprocessing elements
+        el.avatarPreviewBtn    = document.getElementById('ace-avatar-preview-btn');
+        el.avatarPreviewResult = document.getElementById('ace-avatar-preview-result');
+        el.avatarStartBtn      = document.getElementById('ace-avatar-start-btn');
+
         if (!el.startBtn) return; // not on batch page
 
         loadState();
@@ -371,6 +437,14 @@
         }
         if (el.contentStartBtn) {
             el.contentStartBtn.addEventListener('click', handleContentStart);
+        }
+
+        // Avatar events
+        if (el.avatarPreviewBtn) {
+            el.avatarPreviewBtn.addEventListener('click', handleAvatarPreview);
+        }
+        if (el.avatarStartBtn) {
+            el.avatarStartBtn.addEventListener('click', handleAvatarStart);
         }
 
         window.addEventListener('beforeunload', function() {

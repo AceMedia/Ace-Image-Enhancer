@@ -449,6 +449,17 @@ class Ace_Image_Enhancer {
                     <button type="button" id="ace-content-start-btn" class="button button-primary" style="display:none">Start Reprocessing from Content</button>
                 </p>
             </div>
+            <div class="ace-reprocess-content-section" style="margin-top:20px;">
+                <h2>Reprocess Author Avatars</h2>
+                <p>Find and reprocess all media-library avatars set by users on this site. Useful when authors have uploaded portrait images before the WebP/AVIF setting was active.</p>
+                <p>
+                    <button type="button" id="ace-avatar-preview-btn" class="button">Preview Avatar Images</button>
+                    <span id="ace-avatar-preview-result" style="margin-left:10px;font-weight:600"></span>
+                </p>
+                <p>
+                    <button type="button" id="ace-avatar-start-btn" class="button button-primary" style="display:none">Reprocess Avatar Images</button>
+                </p>
+            </div>
         </div>
         <?php
     }
@@ -642,6 +653,12 @@ class Ace_Image_Enhancer {
                 'attachment_id' => ['required' => true, 'type' => 'integer', 'minimum' => 1],
                 'new_name'      => ['required' => true, 'type' => 'string',  'sanitize_callback' => 'sanitize_file_name'],
             ],
+        ]);
+
+        register_rest_route($ns, '/batch-from-avatars', [
+            'methods'             => 'GET',
+            'callback'            => [$this, 'rest_batch_from_avatars'],
+            'permission_callback' => function() { return current_user_can('upload_files'); },
         ]);
     }
 
@@ -1066,6 +1083,76 @@ class Ace_Image_Enhancer {
             'count' => count($valid_images),
             'image_ids' => array_values($valid_images),
             'post_count' => count($posts),
+        ]);
+    }
+
+    public function rest_batch_from_avatars(\WP_REST_Request $request): \WP_REST_Response {
+        $users = get_users([
+            'fields'  => 'ID',
+            'number'  => -1,
+        ]);
+
+        $image_ids   = [];
+        $user_count  = 0;
+
+        foreach ($users as $user_id) {
+            $user_id = (int) $user_id;
+
+            // Primary: custom_avatar_id set by set-avatar plugin
+            $attachment_id = (int) get_user_meta($user_id, 'custom_avatar_id', true);
+
+            // Fallback: resolve from the URL stored in custom_avatar
+            if ($attachment_id <= 0) {
+                $avatar_url = get_user_meta($user_id, 'custom_avatar', true);
+                if ($avatar_url) {
+                    $resolved = attachment_url_to_postid($avatar_url);
+                    if ($resolved > 0) {
+                        $attachment_id = $resolved;
+                        // Cache the resolved ID for future requests
+                        update_user_meta($user_id, 'custom_avatar_id', $attachment_id);
+                    }
+                }
+            }
+
+            // Also check common avatar plugin meta keys for broader compatibility
+            if ($attachment_id <= 0) {
+                foreach (['wp_user_avatar', 'simple_local_avatar'] as $meta_key) {
+                    $val = get_user_meta($user_id, $meta_key, true);
+                    if (is_numeric($val) && (int) $val > 0) {
+                        $attachment_id = (int) $val;
+                        break;
+                    }
+                    if ($val && filter_var($val, FILTER_VALIDATE_URL)) {
+                        $resolved = attachment_url_to_postid($val);
+                        if ($resolved > 0) {
+                            $attachment_id = $resolved;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if ($attachment_id > 0) {
+                $image_ids[] = $attachment_id;
+                $user_count++;
+            }
+        }
+
+        // Deduplicate and validate that the file exists and is reprocessable
+        $image_ids   = array_unique(array_map('intval', array_filter($image_ids)));
+        $valid_images = [];
+
+        foreach ($image_ids as $id) {
+            $file = get_attached_file($id);
+            if ($file && file_exists($file) && $this->resolve_reprocess_source_file($file)) {
+                $valid_images[] = $id;
+            }
+        }
+
+        return rest_ensure_response([
+            'count'      => count($valid_images),
+            'image_ids'  => array_values($valid_images),
+            'user_count' => $user_count,
         ]);
     }
 
