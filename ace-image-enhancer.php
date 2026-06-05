@@ -82,6 +82,7 @@ class Ace_Image_Enhancer {
             'image_quality'          => 85,
             'enable_svg'             => true,
             'keep_originals'         => true,
+            'replace_originals'      => false,
             'enable_svg_editor'      => false,
             'batch_default_types'    => ['jpg', 'jpeg', 'png'],
             'batch_overwrite'        => false,
@@ -140,6 +141,14 @@ class Ace_Image_Enhancer {
             'keep_originals',
             'Keep Original Files',
             [$this, 'keep_originals_field_callback'],
+            'ace-image-enhancer',
+            'ace_image_enhancer_main'
+        );
+
+        add_settings_field(
+            'replace_originals',
+            'Replace Originals',
+            [$this, 'replace_originals_field_callback'],
             'ace-image-enhancer',
             'ace_image_enhancer_main'
         );
@@ -233,6 +242,18 @@ class Ace_Image_Enhancer {
         <?php
     }
 
+    public function replace_originals_field_callback() {
+        $value = $this->get_option('replace_originals');
+        ?>
+        <label>
+            <input type="checkbox" name="ace_image_enhancer_options[replace_originals]"
+                   value="1" <?php checked($value, 1); ?> />
+            Allow this plugin to replace or delete original raster files
+        </label>
+        <p class="description">Leave disabled unless you explicitly want original files removed during reprocessing. Uploads always preserve the original file.</p>
+        <?php
+    }
+
     public function svg_field_callback() {
         $value = $this->get_option('enable_svg');
         
@@ -314,6 +335,7 @@ class Ace_Image_Enhancer {
         $sanitized['image_quality']     = max(1, min(100, intval($input['image_quality'] ?? 85)));
         $sanitized['enable_svg']        = !empty($input['enable_svg']);
         $sanitized['keep_originals']    = !empty($input['keep_originals']);
+        $sanitized['replace_originals'] = !empty($input['replace_originals']);
         $sanitized['enable_svg_editor'] = !empty($input['enable_svg_editor']);
 
         // Batch defaults
@@ -862,7 +884,7 @@ class Ace_Image_Enhancer {
                     if ($thumb_destination['replace_after_save']) {
                         @rename($thumb_destination['save_file'], $thumb_destination['target_file']);
                     }
-                    if (!$this->get_option('keep_originals') && $thumb_source !== $thumb_destination['target_file'] && file_exists($thumb_source)) {
+                    if (!$this->get_option('keep_originals') && $this->should_replace_originals() && $thumb_source !== $thumb_destination['target_file'] && file_exists($thumb_source)) {
                         @unlink($thumb_source);
                     }
                     $meta['sizes'][$size_name]['file']      = basename($thumb_destination['target_file']);
@@ -881,7 +903,7 @@ class Ace_Image_Enhancer {
         wp_update_post(['ID' => $attachment_id, 'post_mime_type' => $mime_type]);
 
         // --- Optionally delete original main file ---
-        if (!$this->get_option('keep_originals') && $source_file !== $dest && file_exists($source_file)) {
+        if (!$this->get_option('keep_originals') && $this->should_replace_originals() && $source_file !== $dest && file_exists($source_file)) {
             @unlink($source_file);
         }
 
@@ -1530,6 +1552,168 @@ class Ace_Image_Enhancer {
     // ---------------------------------------------------------
     // Raster Image: Convert and Serve as WebP / AVIF
     // ---------------------------------------------------------
+    private function debug_log($message, array $context = []) {
+        if (!defined('WP_DEBUG') || !WP_DEBUG) {
+            return;
+        }
+
+        $parts = [];
+        foreach ($context as $key => $value) {
+            if (is_scalar($value) || $value === null) {
+                $parts[] = $key . '=' . (string) $value;
+            }
+        }
+
+        error_log('[Ace Image Enhancer] ' . $message . ($parts ? ' ' . implode(' ', $parts) : ''));
+    }
+
+    private function get_image_mime_type($file) {
+        if (!is_string($file) || $file === '' || !file_exists($file) || !is_readable($file)) {
+            return '';
+        }
+
+        $mime = function_exists('wp_get_image_mime') ? wp_get_image_mime($file) : '';
+        if (!$mime) {
+            $type = wp_check_filetype($file);
+            $mime = $type['type'] ?? '';
+        }
+
+        return (string) $mime;
+    }
+
+    private function is_palette_png($file) {
+        if ($this->get_image_mime_type($file) !== 'image/png' || !function_exists('imagecreatefrompng') || !function_exists('imageistruecolor')) {
+            return false;
+        }
+
+        $image = @imagecreatefrompng($file);
+        if (!$image) {
+            return false;
+        }
+
+        $is_palette = !imageistruecolor($image);
+        imagedestroy($image);
+
+        return $is_palette;
+    }
+
+    private function get_webp_skip_reason($file) {
+        if (!is_string($file) || $file === '') {
+            return 'missing_source';
+        }
+
+        if (!file_exists($file)) {
+            return 'source_not_found';
+        }
+
+        if (!is_readable($file)) {
+            return 'source_not_readable';
+        }
+
+        if (!extension_loaded('gd') || !function_exists('imagewebp')) {
+            return 'webp_not_supported';
+        }
+
+        $mime = $this->get_image_mime_type($file);
+        if ($mime === 'image/svg+xml') {
+            return 'svg_not_rasterized';
+        }
+
+        if ($mime === 'image/avif') {
+            return 'avif_not_supported';
+        }
+
+        if ($mime === 'image/webp') {
+            return 'already_webp';
+        }
+
+        if (!in_array($mime, ['image/jpeg', 'image/png'], true)) {
+            return 'unsupported_mime';
+        }
+
+        if ($mime === 'image/png' && $this->is_palette_png($file)) {
+            return 'palette_png_skipped';
+        }
+
+        return '';
+    }
+
+    private function can_generate_webp($file) {
+        return $this->get_webp_skip_reason($file) === '';
+    }
+
+    private function safe_generate_webp($source, $destination) {
+        $mime = $this->get_image_mime_type($source);
+        $skip_reason = $this->get_webp_skip_reason($source);
+        if ($skip_reason !== '') {
+            $this->debug_log('WebP conversion skipped', [
+                'source' => $source,
+                'mime'   => $mime,
+                'reason' => $skip_reason,
+            ]);
+            return false;
+        }
+
+        $destination_dir = dirname($destination);
+        if (!is_dir($destination_dir) || !is_writable($destination_dir)) {
+            $this->debug_log('WebP conversion skipped', [
+                'source'      => $source,
+                'destination' => $destination,
+                'mime'        => $mime,
+                'reason'      => 'destination_not_writable',
+            ]);
+            return false;
+        }
+
+        try {
+            $image = wp_get_image_editor($source);
+            if (is_wp_error($image)) {
+                $this->debug_log('WebP conversion failed', [
+                    'source'      => $source,
+                    'destination' => $destination,
+                    'mime'        => $mime,
+                    'reason'      => $image->get_error_message(),
+                ]);
+                return false;
+            }
+
+            $this->debug_log('WebP conversion started', [
+                'source'      => $source,
+                'destination' => $destination,
+                'mime'        => $mime,
+                'editor'      => get_class($image),
+            ]);
+
+            $image->set_quality($this->get_option('image_quality'));
+            $saved = $image->save($destination, 'image/webp');
+            unset($image);
+
+            if (is_wp_error($saved)) {
+                $this->debug_log('WebP conversion failed', [
+                    'source'      => $source,
+                    'destination' => $destination,
+                    'mime'        => $mime,
+                    'reason'      => $saved->get_error_message(),
+                ]);
+                return false;
+            }
+
+            return true;
+        } catch (\Throwable $e) {
+            $this->debug_log('WebP conversion failed', [
+                'source'      => $source,
+                'destination' => $destination,
+                'mime'        => $mime,
+                'reason'      => $e->getMessage(),
+            ]);
+            return false;
+        }
+    }
+
+    private function should_replace_originals() {
+        return (bool) $this->get_option('replace_originals');
+    }
+
     public function override_image_quality($quality, $mime_type) {
         // Override WordPress default quality with our setting for WebP/AVIF
         if (in_array($mime_type, ['image/webp', 'image/avif'])) {
@@ -1539,87 +1723,84 @@ class Ace_Image_Enhancer {
     }
     
     public function handle_modern_image_upload($file) {
-        if (str_contains($file['type'], 'svg')) return $file;
-
-        $format = $this->get_option('image_format');
-        $target_format = ($format === 'avif' && extension_loaded('gd') && function_exists('imageavif')) ? 'avif' : 'webp';
-        $mime_type = "image/{$target_format}";
+        if (!is_array($file) || empty($file['file'])) {
+            return $file;
+        }
 
         $src = $file['file'];
-        $ext = pathinfo($src, PATHINFO_EXTENSION);
-        $dest = str_replace(".$ext", ".{$target_format}", $src);
+        $mime = $this->get_image_mime_type($src);
 
-        $image = wp_get_image_editor($src);
-        if (!is_wp_error($image)) {
-            $image->set_quality($this->get_option('image_quality'));
-            $saved = $image->save($dest, $mime_type);
-            if (!is_wp_error($saved)) {
-                // Keep original for now - thumbnails need it
-                // We'll delete it later in generate_webp_versions if needed
-                $file['file'] = $dest;
-                $file['type'] = $mime_type;
-                $file['url']  = str_replace(basename($file['url']), basename($dest), $file['url']);
-            }
+        if (str_contains((string) ($file['type'] ?? $mime), 'svg')) {
+            return $file;
         }
+
+        if (!$this->can_generate_webp($src)) {
+            $this->debug_log('Upload WebP sidecar skipped', [
+                'source' => $src,
+                'mime'   => $mime,
+                'reason' => $this->get_webp_skip_reason($src),
+            ]);
+            return $file;
+        }
+
+        $dest = preg_replace('/\.(jpe?g|png)$/i', '.webp', $src);
+        if (!$dest || $dest === $src) {
+            $this->debug_log('Upload WebP sidecar skipped', [
+                'source' => $src,
+                'mime'   => $mime,
+                'reason' => 'destination_not_derivable',
+            ]);
+            return $file;
+        }
+
+        $this->safe_generate_webp($src, $dest);
 
         return $file;
     }
 
     public function generate_webp_versions($metadata, $attachment_id) {
-        $upload_dir = wp_upload_dir();
-        $file_path = $upload_dir['basedir'] . '/' . $metadata['file'];
-        $ext = pathinfo($file_path, PATHINFO_EXTENSION);
+        try {
+            if (!is_array($metadata) || empty($metadata['file'])) {
+                return $metadata;
+            }
 
-        if ($ext === 'svg') return $metadata;
+            $upload_dir = wp_upload_dir();
+            $file_path = trailingslashit($upload_dir['basedir']) . ltrim($metadata['file'], '/');
+            $mime = $this->get_image_mime_type($file_path);
 
-        $format = $this->get_option('image_format');
-        $target_format = ($format === 'avif' && extension_loaded('gd') && function_exists('imageavif')) ? 'avif' : 'webp';
-        $mime_type = "image/{$target_format}";
-        
-        // Track original files to potentially delete later
-        $originals_to_delete = [];
+            if ($mime === 'image/svg+xml' || strtolower(pathinfo($file_path, PATHINFO_EXTENSION)) === 'svg') {
+                return $metadata;
+            }
 
-        if (!empty($metadata['sizes'])) {
-            foreach ($metadata['sizes'] as $size => $data) {
-                $src = dirname($file_path) . '/' . $data['file'];
-                
-                // Check if this is an original format file
-                if (preg_match('/\.(jpg|jpeg|png)$/i', $src)) {
-                    $dest = preg_replace('/\.(jpg|jpeg|png)$/i', ".{$target_format}", $src);
-
-                    $image = wp_get_image_editor($src);
-                    if (!is_wp_error($image)) {
-                        $image->set_quality($this->get_option('image_quality'));
-                        $saved = $image->save($dest, $mime_type);
-                        if (!is_wp_error($saved)) {
-                            $originals_to_delete[] = $src;
-                            $metadata['sizes'][$size]['file'] = basename($dest);
-                            $metadata['sizes'][$size]['mime-type'] = $mime_type;
-                        }
+            if (!empty($metadata['sizes']) && is_array($metadata['sizes'])) {
+                foreach ($metadata['sizes'] as $size => $data) {
+                    if (empty($data['file'])) {
+                        continue;
                     }
+
+                    $src = trailingslashit(dirname($file_path)) . $data['file'];
+                    if (!preg_match('/\.(jpe?g|png)$/i', $src)) {
+                        continue;
+                    }
+
+                    $dest = preg_replace('/\.(jpe?g|png)$/i', '.webp', $src);
+                    if (!$dest || $dest === $src) {
+                        $this->debug_log('Metadata WebP sidecar skipped', [
+                            'source' => $src,
+                            'size'   => $size,
+                            'reason' => 'destination_not_derivable',
+                        ]);
+                        continue;
+                    }
+
+                    $this->safe_generate_webp($src, $dest);
                 }
             }
-        }
-        
-        // Now delete originals if keep_originals is disabled
-        if (!$this->get_option('keep_originals')) {
-            foreach ($originals_to_delete as $original) {
-                @unlink($original);
-            }
-            
-            // Also delete the main original file if it exists
-            $main_original = preg_replace('/\.(webp|avif)$/i', '.jpg', $file_path);
-            if (file_exists($main_original)) {
-                @unlink($main_original);
-            }
-            $main_original = preg_replace('/\.(webp|avif)$/i', '.jpeg', $file_path);
-            if (file_exists($main_original)) {
-                @unlink($main_original);
-            }
-            $main_original = preg_replace('/\.(webp|avif)$/i', '.png', $file_path);
-            if (file_exists($main_original)) {
-                @unlink($main_original);
-            }
+        } catch (\Throwable $e) {
+            $this->debug_log('Metadata WebP generation failed defensively', [
+                'attachment_id' => $attachment_id,
+                'reason'        => $e->getMessage(),
+            ]);
         }
 
         return $metadata;
