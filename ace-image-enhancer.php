@@ -1817,7 +1817,17 @@ class Ace_Image_Enhancer {
         $target_format = ($format === 'avif' && extension_loaded('gd') && function_exists('imageavif')) ? 'avif' : 'webp';
         $modern_path = preg_replace('/\.(jpg|jpeg|png)$/i', ".{$target_format}", $file);
 
-        if (file_exists($modern_path)) {
+        // Cache the existence check rather than stat the disk for every image on
+        // every front-end render. Short TTL so newly generated / deleted variants
+        // reconcile quickly; routes through the object cache (Ace Redis Cache).
+        $cache_key  = 'modern_exists_' . $attachment_id . '_' . $target_format;
+        $has_modern = wp_cache_get($cache_key, 'ace_image_enhancer');
+        if (false === $has_modern) {
+            $has_modern = file_exists($modern_path) ? '1' : '0';
+            wp_cache_set($cache_key, $has_modern, 'ace_image_enhancer', HOUR_IN_SECONDS);
+        }
+
+        if ('1' === $has_modern) {
             $upload_dir = wp_upload_dir();
             $image[0] = str_replace($upload_dir['basedir'], $upload_dir['baseurl'], $modern_path);
         }
