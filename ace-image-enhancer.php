@@ -1809,18 +1809,24 @@ class Ace_Image_Enhancer {
     public function serve_webp_images($image, $attachment_id, $size, $icon) {
         if (!$image || !is_array($image)) return $image;
 
-        $file = get_attached_file($attachment_id);
-        $ext = pathinfo($file, PATHINFO_EXTENSION);
-        if ($ext === 'svg') return $image;
+        // Swap the SIZE FILE actually being served for its modern-format sibling.
+        // (Previously this swapped in the modern version of the FULL-SIZE original for
+        // every size request, so a thumbnail request could serve a multi-MB file - and
+        // for already-webp uploads the "swap" resolved to the original itself.
+        // Thumbnails must stay thumbnails.)
+        $upload_dir = wp_upload_dir();
+        $path = str_replace($upload_dir['baseurl'], $upload_dir['basedir'], (string) $image[0]);
+        $ext  = strtolower((string) pathinfo($path, PATHINFO_EXTENSION));
+        if (!in_array($ext, ['jpg', 'jpeg', 'png'], true)) return $image; // svg, or already webp/avif
 
         $format = $this->get_option('image_format');
         $target_format = ($format === 'avif' && extension_loaded('gd') && function_exists('imageavif')) ? 'avif' : 'webp';
-        $modern_path = preg_replace('/\.(jpg|jpeg|png)$/i', ".{$target_format}", $file);
+        $modern_path = preg_replace('/\.(jpg|jpeg|png)$/i', ".{$target_format}", $path);
 
         // Cache the existence check rather than stat the disk for every image on
         // every front-end render. Short TTL so newly generated / deleted variants
         // reconcile quickly; routes through the object cache (Ace Redis Cache).
-        $cache_key  = 'modern_exists_' . $attachment_id . '_' . $target_format;
+        $cache_key  = 'modern_exists_' . $target_format . '_' . md5($modern_path);
         $has_modern = wp_cache_get($cache_key, 'ace_image_enhancer');
         if (false === $has_modern) {
             $has_modern = file_exists($modern_path) ? '1' : '0';
@@ -1828,7 +1834,6 @@ class Ace_Image_Enhancer {
         }
 
         if ('1' === $has_modern) {
-            $upload_dir = wp_upload_dir();
             $image[0] = str_replace($upload_dir['basedir'], $upload_dir['baseurl'], $modern_path);
         }
 
