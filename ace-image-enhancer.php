@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Ace Image Enhancer
  * Description: Adds modern image handling (WebP/AVIF) with configurable settings and secure SVG upload support with XSS sanitization.
- * Version: 1.3.0
+ * Version: 1.4.0
  * Author: Shane Rounce, AceMedia
  */
 
@@ -51,7 +51,12 @@ class Ace_Image_Enhancer {
             add_filter('wp_handle_upload', [$this, 'handle_modern_image_upload'], 20); // Priority 20 to run after SVG
             add_filter('wp_generate_attachment_metadata', [$this, 'generate_webp_versions'], 10, 2);
             add_filter('wp_get_attachment_image_src', [$this, 'serve_webp_images'], 10, 4);
-            
+            // The src swap alone isn't enough: browsers pick from srcset, and content images and
+            // cover backgrounds carry hard-coded URLs. Point all of them at the modern sibling.
+            add_filter('wp_calculate_image_srcset', [$this, 'serve_modern_srcset']);
+            add_filter('wp_content_img_tag', [$this, 'serve_modern_img_tag']);
+            add_filter('render_block', [$this, 'serve_modern_backgrounds']);
+
             // Override WordPress default image quality with our setting
             add_filter('wp_editor_set_quality', [$this, 'override_image_quality'], 10, 2);
         }
@@ -853,6 +858,7 @@ class Ace_Image_Enhancer {
         if ($destination['replace_after_save']) {
             @rename($destination['save_file'], $destination['target_file']);
         }
+        $this->forget_modern_check($destination['target_file']);
 
         // --- Convert existing thumbnail sizes in-place ---
         // We do NOT call wp_generate_attachment_metadata() here because it reloads the
@@ -884,6 +890,7 @@ class Ace_Image_Enhancer {
                     if ($thumb_destination['replace_after_save']) {
                         @rename($thumb_destination['save_file'], $thumb_destination['target_file']);
                     }
+                    $this->forget_modern_check($thumb_destination['target_file']);
                     if (!$this->get_option('keep_originals') && $this->should_replace_originals() && $thumb_source !== $thumb_destination['target_file'] && file_exists($thumb_source)) {
                         @unlink($thumb_source);
                     }
@@ -1427,7 +1434,7 @@ class Ace_Image_Enhancer {
             return;
         }
 
-        $ver = '1.3.0';
+        $ver = '1.4.0';
         $base = plugins_url('', __FILE__);
 
         wp_enqueue_style('ace-reprocess', $base . '/css/reprocess.css', [], $ver);
@@ -1698,6 +1705,7 @@ class Ace_Image_Enhancer {
                 return false;
             }
 
+            $this->forget_modern_check($destination);
             return true;
         } catch (\Throwable $e) {
             $this->debug_log('WebP conversion failed', [
@@ -1814,30 +1822,108 @@ class Ace_Image_Enhancer {
         // every size request, so a thumbnail request could serve a multi-MB file - and
         // for already-webp uploads the "swap" resolved to the original itself.
         // Thumbnails must stay thumbnails.)
-        $upload_dir = wp_upload_dir();
-        $path = str_replace($upload_dir['baseurl'], $upload_dir['basedir'], (string) $image[0]);
-        $ext  = strtolower((string) pathinfo($path, PATHINFO_EXTENSION));
-        if (!in_array($ext, ['jpg', 'jpeg', 'png'], true)) return $image; // svg, or already webp/avif
+        $modern = $this->modern_url((string) $image[0]);
+        if ($modern !== null) {
+            $image[0] = $modern;
+        }
 
-        $format = $this->get_option('image_format');
-        $target_format = ($format === 'avif' && extension_loaded('gd') && function_exists('imageavif')) ? 'avif' : 'webp';
-        $modern_path = preg_replace('/\.(jpg|jpeg|png)$/i', ".{$target_format}", $path);
+        return $image;
+    }
 
-        // Cache the existence check rather than stat the disk for every image on
-        // every front-end render. Short TTL so newly generated / deleted variants
-        // reconcile quickly; routes through the object cache (Ace Redis Cache).
-        $cache_key  = 'modern_exists_' . $target_format . '_' . md5($modern_path);
+    /** Every srcset candidate WordPress builds from attachment metadata. */
+    public function serve_modern_srcset($sources) {
+        if (!is_array($sources)) return $sources;
+        foreach ($sources as &$source) {
+            if (!empty($source['url']) && ($modern = $this->modern_url((string) $source['url'])) !== null) {
+                $source['url'] = $modern;
+            }
+        }
+        return $sources;
+    }
+
+    /** src and srcset of each <img> in post content and block templates (wp_filter_content_tags). */
+    public function serve_modern_img_tag($img) {
+        if (!is_string($img) || !preg_match('/\.(?:jpe?g|png)/i', $img)) return $img;
+        return preg_replace_callback('/\b(src|srcset)=(["\'])(.*?)\2/i', function ($m) {
+            if (strtolower($m[1]) === 'srcset') {
+                $value = preg_replace_callback('/[^\s,]+\.(?:jpe?g|png)(?:\?[^\s,]*)?(?=[\s,]|$)/i', function ($u) {
+                    return $this->modern_url($u[0]) ?? $u[0];
+                }, $m[3]);
+            } else {
+                $value = $this->modern_url($m[3]) ?? $m[3];
+            }
+            return $m[1] . '=' . $m[2] . $value . $m[2];
+        }, $img);
+    }
+
+    /** CSS backgrounds in block markup, e.g. parallax covers' background-image:url(...). */
+    public function serve_modern_backgrounds($html) {
+        if (!is_string($html) || strpos($html, 'url(') === false || !preg_match('/\.(?:jpe?g|png)/i', $html)) return $html;
+        return preg_replace_callback('/url\(\s*(["\']|&quot;|&#039;|)([^"\')\s&]+\.(?:jpe?g|png)(?:\?[^"\')\s&]*)?)\1\s*\)/i', function ($m) {
+            return 'url(' . $m[1] . ($this->modern_url($m[2]) ?? $m[2]) . $m[1] . ')';
+        }, $html);
+    }
+
+    /**
+     * The modern-format sibling of an uploaded JPG/PNG (name.webp beside name.png, as this plugin
+     * writes them), or null when there isn't one. Any host and any network blog under the uploads
+     * root counts, since content can reference another blog's uploads. The existence check is cached
+     * in the object cache for an hour and per request, so a page full of srcsets costs no disk stats.
+     */
+    private function modern_url($url) {
+        static $memo = [];
+        if (isset($memo[$url])) return $memo[$url] ?: null;
+        $memo[$url] = false;
+
+        if (!preg_match('/\.(jpe?g|png)(?=$|\?)/i', $url)) return null;
+        [$root, $prefix] = $this->uploads_root();
+        $path = rawurldecode((string) wp_parse_url($url, PHP_URL_PATH));
+        if ($root === '' || strpos($path, $prefix) !== 0 || strpos($path, '..') !== false) return null;
+
+        $format = $this->modern_format();
+        $modern_path = wp_normalize_path(preg_replace('/\.(jpe?g|png)$/i', '.' . $format, $root . substr($path, strlen($prefix) - 1)));
+
+        $cache_key  = 'modern_exists_' . $format . '_' . md5($modern_path);
         $has_modern = wp_cache_get($cache_key, 'ace_image_enhancer');
         if (false === $has_modern) {
             $has_modern = file_exists($modern_path) ? '1' : '0';
             wp_cache_set($cache_key, $has_modern, 'ace_image_enhancer', HOUR_IN_SECONDS);
         }
+        if ('1' !== $has_modern) return null;
 
-        if ('1' === $has_modern) {
-            $image[0] = str_replace($upload_dir['basedir'], $upload_dir['baseurl'], $modern_path);
+        return $memo[$url] = preg_replace('/\.(jpe?g|png)(?=$|\?)/i', '.' . $format, $url);
+    }
+
+    /** [uploads root dir, its URL path with trailing slash], network-wide (sites/N stripped). */
+    private function uploads_root() {
+        static $root = null;
+        if ($root === null) {
+            $up  = wp_upload_dir(null, false);
+            $dir = rtrim(wp_normalize_path((string) $up['basedir']), '/');
+            $url = rtrim((string) wp_parse_url((string) $up['baseurl'], PHP_URL_PATH), '/');
+            if (is_multisite()) {
+                $dir = preg_replace('#/sites/\d+$#', '', $dir);
+                $url = preg_replace('#/sites/\d+$#', '', $url);
+            }
+            $root = ($dir !== '' && $url !== '') ? [$dir, $url . '/'] : ['', ''];
         }
+        return $root;
+    }
 
-        return $image;
+    /**
+     * Drop the cached "no modern sibling" answer for a file that has just been written, so a
+     * reprocessed image is served as WebP/AVIF straight away rather than after the hour's cache.
+     */
+    private function forget_modern_check($modern_path) {
+        $modern_path = wp_normalize_path((string) $modern_path);
+        $ext = strtolower((string) pathinfo($modern_path, PATHINFO_EXTENSION));
+        if (in_array($ext, ['webp', 'avif'], true)) {
+            wp_cache_delete('modern_exists_' . $ext . '_' . md5($modern_path), 'ace_image_enhancer');
+        }
+    }
+
+    private function modern_format() {
+        return ($this->get_option('image_format') === 'avif' && extension_loaded('gd') && function_exists('imageavif')) ? 'avif' : 'webp';
     }
 
     // ---------------------------------------------------------
@@ -1853,14 +1939,14 @@ class Ace_Image_Enhancer {
             'ace-svg-editor',
             plugins_url('css/svg-editor.css', __FILE__),
             [],
-            '1.3.0'
+            '1.4.0'
         );
 
         wp_enqueue_script(
             'ace-svg-editor',
             plugins_url('js/svg-editor.js', __FILE__),
             ['jquery'],
-            '1.3.0',
+            '1.4.0',
             true
         );
 
