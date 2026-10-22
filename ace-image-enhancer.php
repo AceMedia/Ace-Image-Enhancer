@@ -1601,7 +1601,7 @@ class Ace_Image_Enhancer {
         }
 
         $is_palette = !imageistruecolor($image);
-        imagedestroy($image);
+        unset($image); // imagedestroy() is a no-op since PHP 8.0 and deprecated in 8.5.
 
         return $is_palette;
     }
