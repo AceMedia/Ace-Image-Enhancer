@@ -37,7 +37,7 @@ Open an issue on the plugin's GitHub repository.
 
 == Privacy and external services ==
 
-Image conversion and SVG editing run locally. The plugin does not send images, account details or site content to an external service. The bundled SVG-Edit editor is distributed under the MIT licence in svgedit/LICENSE-MIT.txt.
+Image conversion and SVG editing run locally. The plugin does not send images, account details or site content to an external service. The bundled SVG-Edit editor is distributed under the MIT licence in svgedit/LICENSE-MIT.txt. Its upstream source and build instructions are available at https://github.com/SVG-Edit/svgedit. The embedded editor can store preferences and artwork in the browser when you choose its local storage option.
 
 == SVG limitations ==
 
