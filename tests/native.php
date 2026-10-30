@@ -58,4 +58,12 @@ $assert($path->invoke($plugin, $probe), 'resolved trusted upload-root path accep
 $nested = $root . '/aie-untrusted-link'; symlink($root, $nested);
 $assert(!$path->invoke($plugin, $alias . '/aie-untrusted-link/aie-symlink-root-probe.txt'), 'symlink beneath trusted root denied');
 $assert(!$path->invoke($plugin, $alias . '/../outside'), 'traversal beneath trusted root denied');
+if (function_exists('imagecreatetruecolor') && function_exists('imagewebp')) {
+    $raster = $alias . '/aie-root-conversion.png';
+    $modern = $alias . '/aie-root-conversion.webp';
+    $pixels = imagecreatetruecolor(8, 8); imagepng($pixels, $raster); unset($pixels);
+    $generate = new ReflectionMethod($plugin, 'safe_generate_webp');
+    $assert($generate->invoke($plugin, $raster, $modern) && is_file($modern) && wp_get_image_mime($modern) === 'image/webp', 'conversion works through trusted upload-root symlink');
+    unlink($raster); unlink($modern);
+}
 remove_filter('upload_dir', $override); unlink($nested); unlink($probe); unlink($alias);
