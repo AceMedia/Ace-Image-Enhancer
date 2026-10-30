@@ -302,7 +302,7 @@ class Ace_Image_Enhancer {
         $types    = ['jpg' => 'JPEG (.jpg)', 'jpeg' => 'JPEG (.jpeg)', 'png' => 'PNG', 'gif' => 'GIF', 'bmp' => 'BMP'];
         foreach ($types as $val => $label) {
             $checked = in_array($val, (array) $selected, true) ? 'checked' : '';
-            echo '<label style="margin-right:12px"><input type="checkbox" name="ace_image_enhancer_options[batch_default_types][]" value="' . esc_attr($val) . '" ' . $checked . '> ' . esc_html($label) . '</label>';
+            echo '<label style="margin-right:12px"><input type="checkbox" name="ace_image_enhancer_options[batch_default_types][]" value="' . esc_attr($val) . '" ' . esc_attr($checked) . '> ' . esc_html($label) . '</label>';
         }
         echo '<p class="description">File types to include when batch reprocessing.</p>';
     }
@@ -353,7 +353,7 @@ class Ace_Image_Enhancer {
                             <td><?php foreach ($all_types as $val => $label):
                                 $chk = in_array($val, $types, true) ? 'checked' : ''; ?>
                                 <label style="display:block;margin-bottom:4px">
-                                    <input type="checkbox" class="ace-filter-type" value="<?php echo esc_attr($val); ?>" <?php echo $chk ?>>
+                                    <input type="checkbox" class="ace-filter-type" value="<?php echo esc_attr($val); ?>" <?php echo esc_attr($chk); ?>>
                                     <?php echo esc_html($label); ?>
                                 </label>
                             <?php endforeach; ?></td>
@@ -461,88 +461,19 @@ class Ace_Image_Enhancer {
                     <td><strong>SVG Currently Allowed</strong></td>
                     <td>
                         <?php
-                        // Check server capability
-                        $has_simplexml = extension_loaded('simplexml');
-                        $has_dom = extension_loaded('dom');
-                        $has_libxml = extension_loaded('libxml');
-                        $server_capable = $has_simplexml || ($has_dom && $has_libxml);
-                        
-                        // Check WordPress version
-                        global $wp_version;
-                        $wp_core_supports_svg = version_compare($wp_version, '6.3', '>=');
-                        
-                        // Check actual MIME types
-                        $current_mimes = get_allowed_mime_types();
-                        $svg_allowed = false;
-                        foreach ($current_mimes as $exts => $mime) {
-                            if ($mime === 'image/svg+xml') {
-                                $svg_allowed = true;
-                                break;
-                            }
-                        }
-                        
-                        // If WP 6.3+ and server capable, consider SVG natively supported
-                        if ($wp_core_supports_svg && $server_capable) {
-                            echo '✓ Allowed (native WordPress ' . $wp_version . ' support)';
-                            if ($this->get_option('enable_svg')) {
-                                echo '<br><em style="font-size: 11px;">+ Plugin sanitization layer active</em>';
-                            }
-                        } elseif ($svg_allowed) {
-                            echo $this->get_option('enable_svg') 
-                                ? '✓ Allowed (with this plugin\'s sanitization)' 
-                                : '✓ Allowed (by another plugin/code)';
-                        } else {
-                            echo '✗ Not Allowed';
-                        }
+                        echo $this->get_option('enable_svg') && class_exists('DOMDocument') ? 'Enabled with SVG sanitisation' : 'Disabled';
                         ?>
                     </td>
                 </tr>
                 <tr>
                     <td><strong>WordPress Version</strong></td>
-                    <td><?php echo get_bloginfo('version'); ?></td>
+                    <td><?php echo esc_html(get_bloginfo('version')); ?></td>
                 </tr>
                 <tr>
                     <td><strong>SVG Capability Status</strong></td>
                     <td>
                         <?php
-                        // Check server capability for SVG processing
-                        $has_simplexml = extension_loaded('simplexml');
-                        $has_libxml = extension_loaded('libxml');
-                        $has_dom = extension_loaded('dom');
-                        
-                        // We can process SVG if we have at least one XML parsing method
-                        $server_can_handle_svg = $has_simplexml || ($has_dom && $has_libxml);
-                        
-                        // Check WordPress version (6.3+ includes SVG support)
-                        global $wp_version;
-                        $wp_core_supports_svg = version_compare($wp_version, '6.3', '>=');
-                        
-                        // Check if SVG is currently in allowed MIME types
-                        $current_mimes = get_allowed_mime_types();
-                        $svg_currently_allowed = false;
-                        foreach ($current_mimes as $exts => $mime) {
-                            if ($mime === 'image/svg+xml') {
-                                $svg_currently_allowed = true;
-                                break;
-                            }
-                        }
-                        
-                        // If WP 6.3+ and server capable, SVG is natively supported
-                        $native_svg_support = $wp_core_supports_svg && $server_can_handle_svg;
-                        
-                        if (!$server_can_handle_svg) {
-                            echo '⚠️ <strong>Server limitation:</strong> Missing required XML processing extensions (needs SimpleXML or DOM+LibXML)';
-                        } elseif ($native_svg_support) {
-                            echo '✓ Server capable • ✓ WordPress ' . $wp_version . ' natively supports SVG • ✓ SVG uploads enabled';
-                            if ($this->get_option('enable_svg')) {
-                                echo '<br><em style="font-size: 12px;">Plugin sanitization layer active (additional security)</em>';
-                            }
-                        } elseif ($svg_currently_allowed) {
-                            echo '✓ Server capable • ✓ SVG uploads enabled' . 
-                                 ($this->get_option('enable_svg') ? ' (with this plugin\'s sanitization)' : ' (by another plugin/code)');
-                        } else {
-                            echo '✓ Server capable • ⚠️ WordPress ' . $wp_version . ' (older version) • SVG not supported in core (enable plugin option)';
-                        }
+                        echo class_exists('DOMDocument') ? 'PHP DOM available. SVG uploads require the plugin setting to be enabled.' : 'PHP DOM is required. SVG uploads are rejected.';
                         ?>
                     </td>
                 </tr>
@@ -601,7 +532,7 @@ class Ace_Image_Enhancer {
         register_rest_route($ns, '/reprocess-single', [
             'methods'             => 'POST',
             'callback'            => [$this, 'rest_reprocess_single'],
-            'permission_callback' => function() { return current_user_can('manage_options'); },
+            'permission_callback' => function($request) { return current_user_can('upload_files') && current_user_can('edit_post', (int) $request['attachment_id']); },
             'args'                => [
                 'attachment_id' => ['required' => true, 'type' => 'integer', 'minimum' => 1],
             ],
@@ -794,7 +725,7 @@ class Ace_Image_Enhancer {
         }
 
         if ($destination['replace_after_save']) {
-            @rename($destination['save_file'], $destination['target_file']);
+            if (!$this->filesystem()->move($destination['save_file'], $destination['target_file'], true)) return ['status' => 'failed', 'reason' => 'replace_failed', 'id' => $attachment_id];
         }
         $this->forget_modern_check($destination['target_file']);
 
@@ -827,11 +758,11 @@ class Ace_Image_Enhancer {
 
                 if (!is_wp_error($thumb_saved)) {
                     if ($thumb_destination['replace_after_save']) {
-                        @rename($thumb_destination['save_file'], $thumb_destination['target_file']);
+                        if (!$this->filesystem()->move($thumb_destination['save_file'], $thumb_destination['target_file'], true)) continue;
                     }
                     $this->forget_modern_check($thumb_destination['target_file']);
                     if (!$this->get_option('keep_originals') && $this->should_replace_originals() && $thumb_source !== $thumb_destination['target_file'] && file_exists($thumb_source)) {
-                        @unlink($thumb_source);
+                        wp_delete_file($thumb_source);
                     }
                     $meta['sizes'][$size_name]['file']      = basename($thumb_destination['target_file']);
                     $meta['sizes'][$size_name]['mime-type'] = $mime_type;
@@ -850,7 +781,7 @@ class Ace_Image_Enhancer {
 
         // --- Optionally delete original main file ---
         if (!$this->get_option('keep_originals') && $this->should_replace_originals() && $source_file !== $dest && file_exists($source_file)) {
-            @unlink($source_file);
+            wp_delete_file($source_file);
         }
 
         // Nudge GC between images so fragmented GD heap is released before next iteration
@@ -1198,11 +1129,11 @@ class Ace_Image_Enhancer {
             if ($old_path === $new_path) {
                 continue;
             }
-            if (@rename($old_path, $new_path)) {
+            if ($this->filesystem()->move($old_path, $new_path)) {
                 $renamed[] = basename($new_path);
                 $completed[$old_path] = $new_path;
             } else {
-                foreach (array_reverse($completed, true) as $old => $new) rename($new, $old);
+                foreach (array_reverse($completed, true) as $old => $new) $this->filesystem()->move($new, $old);
                 return new \WP_Error('rename_failed', 'Could not rename all files; earlier moves were rolled back.');
             }
         }
@@ -1469,12 +1400,19 @@ class Ace_Image_Enhancer {
                     if (strpos($value, chr(92)) !== false || preg_match('/[\x00-\x08]|(?:javascript|data|https?):/i', $value)) return false;
                 }
             }
-            foreach ($doc->childNodes as $node) if ($node->nodeType === XML_PI_NODE) return false;
+            $xpath = new DOMXPath($doc);
+            if ($xpath->query('//processing-instruction()')->length) return false;
             return $doc->saveXML($doc->documentElement);
         } finally {
             libxml_clear_errors();
             libxml_use_internal_errors($previous);
         }
+    }
+
+    private function filesystem() {
+        require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-base.php';
+        require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-direct.php';
+        return new WP_Filesystem_Direct(null);
     }
 
     private function safe_upload_path($path, $existing = true) {
@@ -1598,7 +1536,7 @@ class Ace_Image_Enhancer {
         }
 
         $destination_dir = dirname($destination);
-        if (!is_dir($destination_dir) || !is_writable($destination_dir)) {
+        if (!is_dir($destination_dir) || !$this->filesystem()->is_writable($destination_dir)) {
             $this->debug_log('WebP conversion skipped', [
                 'source'      => $source,
                 'destination' => $destination,

@@ -86,3 +86,18 @@
     border-color: #135e96;
     color: #fff;
 }
+
+/* The SVG canvas needs a fixed-height flex parent; rename dialogs stay compact. */
+[id^="ace-svg-editor-modal-"] .ace-tool-modal-container {
+    height: 90vh;
+    display: flex;
+    flex-direction: column;
+}
+[id^="ace-svg-editor-modal-"] iframe {
+    min-height: 0;
+    flex: 1 1 auto;
+}
+[id^="ace-svg-editor-modal-"] .ace-tool-modal-header,
+[id^="ace-svg-editor-modal-"] .ace-tool-modal-footer {
+    flex: 0 0 auto;
+}

@@ -140,7 +140,7 @@ jQuery(document).ready(function($) {
         
         // Request SVG data from SVG-Edit
         try {
-            const svgCanvas = iframe.contentWindow.svgCanvas || iframe.contentWindow.svgEditor?.canvas;
+            const svgCanvas = iframe.contentWindow.svgCanvas || iframe.contentWindow.svgEditor?.svgCanvas || iframe.contentWindow.svgEditor?.canvas;
             
             if (!svgCanvas) {
                 alert('Unable to communicate with SVG editor. Please try again.');
