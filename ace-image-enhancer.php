@@ -1424,14 +1424,32 @@ class Ace_Image_Enhancer {
 
     private function safe_upload_path($path, $existing = true) {
         $uploads = wp_upload_dir();
-        $root = realpath($uploads['basedir']);
+        $base = rtrim(wp_normalize_path($uploads['basedir']), '/');
+        $root = realpath($base);
         $resolved = $existing ? realpath($path) : realpath(dirname($path));
-        if (!$root || !$resolved || is_link($path)) return false;
-        if ($resolved !== $root && strpos($resolved, $root . DIRECTORY_SEPARATOR) !== 0) return false;
-        $cursor = $path;
-        while ($cursor !== dirname($cursor)) {
+        if (!$root || !$resolved) return false;
+        $root = wp_normalize_path($root);
+        $resolved = wp_normalize_path($resolved);
+        if ($resolved !== $root && strpos($resolved, $root . '/') !== 0) return false;
+
+        // The trusted uploads root may itself be a deployment-managed symlink.
+        // Reject symlinks only beneath that boundary, including alternate file paths.
+        $path = wp_normalize_path($path);
+        $boundary = null;
+        foreach (array_unique([$base, $root]) as $candidate) {
+            if ($path === $candidate || strpos($path, $candidate . '/') === 0) {
+                $boundary = $candidate;
+                break;
+            }
+        }
+        if ($boundary === null) return false;
+        $relative = ltrim(substr($path, strlen($boundary)), '/');
+        $cursor = $boundary;
+        foreach (explode('/', $relative) as $part) {
+            if ($part === '') continue;
+            if ($part === '.' || $part === '..') return false;
+            $cursor .= '/' . $part;
             if (is_link($cursor)) return false;
-            $cursor = dirname($cursor);
         }
         return true;
     }

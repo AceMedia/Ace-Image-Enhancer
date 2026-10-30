@@ -46,3 +46,16 @@ wp_set_current_user(0);
 require_once ABSPATH.'wp-admin/includes/user.php';
 wp_delete_user($author_id);
 wp_delete_attachment($id, true); if (file_exists($fixture)) unlink($fixture); unlink($collision);
+
+// Deployments commonly keep uploads in a shared directory behind a trusted symlink.
+$alias = sys_get_temp_dir() . '/aie-trusted-uploads-' . wp_generate_password(8, false);
+symlink($root, $alias);
+$override = function($uploads) use ($alias) { $uploads['basedir'] = $alias; return $uploads; };
+add_filter('upload_dir', $override);
+$probe = $root . '/aie-symlink-root-probe.txt'; file_put_contents($probe, 'preserve');
+$assert($path->invoke($plugin, $alias . '/aie-symlink-root-probe.txt'), 'trusted upload-root symlink accepted');
+$assert($path->invoke($plugin, $probe), 'resolved trusted upload-root path accepted');
+$nested = $root . '/aie-untrusted-link'; symlink($root, $nested);
+$assert(!$path->invoke($plugin, $alias . '/aie-untrusted-link/aie-symlink-root-probe.txt'), 'symlink beneath trusted root denied');
+$assert(!$path->invoke($plugin, $alias . '/../outside'), 'traversal beneath trusted root denied');
+remove_filter('upload_dir', $override); unlink($nested); unlink($probe); unlink($alias);
