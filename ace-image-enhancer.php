@@ -2,32 +2,15 @@
 /**
  * Plugin Name: Ace Image Enhancer
  * Description: Adds modern image handling (WebP/AVIF) with configurable settings and secure SVG upload support with XSS sanitization.
- * Version: 1.4.0
+ * Version: 1.4.1
+ * Requires at least: 6.0
+ * Requires PHP: 7.4
  * Author: Shane Rounce, AceMedia
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  */
 
 if (!defined('ABSPATH')) exit;
-
-// ============================================================
-// UNCONDITIONAL SVG MIME SUPPORT (for all contexts including WP-CLI)
-// ============================================================
-// Register SVG mime types early and unconditionally so WP-CLI imports work
-add_filter('upload_mimes', function($mimes) {
-    $mimes['svg']  = 'image/svg+xml';
-    $mimes['svgz'] = 'image/svg+xml';
-    return $mimes;
-}, 9999);
-
-// Explicit CLI support
-if (defined('WP_CLI') && WP_CLI) {
-    add_filter('upload_mimes', function($mimes) {
-        $mimes['svg']  = 'image/svg+xml';
-        $mimes['svgz'] = 'image/svg+xml';
-        return $mimes;
-    }, 10000);
-}
 
 class Ace_Image_Enhancer {
 
@@ -41,11 +24,11 @@ class Ace_Image_Enhancer {
         add_action('admin_menu', [$this, 'add_settings_page']);
         add_action('admin_init', [$this, 'register_settings']);
         
-        // SVG support with sanitization (WordPress core doesn't include SVG by default)
-        // Note: MIME registration is now unconditional (see top of file)
-        if ($this->get_option('enable_svg')) {
+        add_filter('upload_mimes', [$this, 'allow_svg_upload']);
+        add_filter('wp_handle_upload_prefilter', [$this, 'sanitize_svg_prefilter']);
+        add_filter('wp_handle_sideload_prefilter', [$this, 'sanitize_svg_prefilter']);
+        if ($this->get_option('enable_svg') && class_exists('DOMDocument')) {
             add_filter('wp_check_filetype_and_ext', [$this, 'fix_svg_mime_check'], 10, 5);
-            add_filter('wp_handle_upload', [$this, 'sanitize_svg_on_upload']);
         }
 
         // Raster image handling - only if not set to 'original'
@@ -263,60 +246,10 @@ class Ace_Image_Enhancer {
 
     public function svg_field_callback() {
         $value = $this->get_option('enable_svg');
-        
-        // Check if SVG is already allowed (by another plugin or custom code)
-        $current_mimes = get_allowed_mime_types();
-        $svg_already_allowed = false;
-        foreach ($current_mimes as $exts => $mime) {
-            if ($mime === 'image/svg+xml') {
-                $svg_already_allowed = true;
-                break;
-            }
-        }
-        
-        // Check server capability
-        $has_simplexml = extension_loaded('simplexml');
-        $has_dom = extension_loaded('dom');
-        $has_libxml = extension_loaded('libxml');
-        $server_capable = $has_simplexml || ($has_dom && $has_libxml);
-        
-        // Check WordPress version (6.3+ includes native SVG support)
-        global $wp_version;
-        $wp_core_supports_svg = version_compare($wp_version, '6.3', '>=');
-        
-        // If both WordPress and server support SVG natively, this becomes optional
-        $native_support = $wp_core_supports_svg && $server_capable;
-        
-        ?>
-        <label style="<?php echo $native_support ? 'opacity: 0.6;' : ''; ?>">
-            <input type="checkbox" name="ace_image_enhancer_options[enable_svg]" 
-                   value="1" <?php checked($value, 1); ?> <?php disabled(!$server_capable || $native_support); ?> />
-            Enable SVG upload support with security sanitization
-        </label>
-        
-        <?php if (!$server_capable): ?>
-            <p class="description" style="color: #d63638;">
-                ⚠️ <strong>Server limitation:</strong> Your server is missing required XML processing extensions. 
-                Install php-simplexml or php-dom to enable SVG support.
-            </p>
-        <?php elseif ($native_support): ?>
-            <p class="description" style="color: #2271b1;">
-                ✓ WordPress <?php echo $wp_version; ?> natively supports SVG uploads. This option is disabled as no plugin configuration is needed.
-            </p>
-        <?php elseif ($svg_already_allowed && !$wp_core_supports_svg): ?>
-            <p class="description" style="color: #d63638;">
-                ⚠️ SVG uploads are enabled by another plugin/code. 
-                Enable this option to add XSS security protection.
-            </p>
-        <?php else: ?>
-            <p class="description">
-                Enable secure SVG file uploads with automatic XSS protection. 
-                Dangerous elements (scripts, event handlers) are automatically removed.
-            </p>
-        <?php endif; ?>
-        <?php
+        echo '<label><input type="checkbox" name="ace_image_enhancer_options[enable_svg]" value="1" ' . checked($value, true, false) . ' /> Enable sanitised SVG uploads</label>';
+        echo '<p class="description">Requires PHP DOM. Compressed SVGZ files, scripts, embedded documents and external references are rejected.</p>';
     }
-    
+
     public function svg_editor_field_callback() {
         $value = $this->get_option('enable_svg_editor');
         ?>
@@ -634,7 +567,7 @@ class Ace_Image_Enhancer {
         register_rest_route($ns, '/batch-count', [
             'methods'             => 'GET',
             'callback'            => [$this, 'rest_batch_count'],
-            'permission_callback' => function() { return current_user_can('upload_files'); },
+            'permission_callback' => function() { return current_user_can('manage_options'); },
             'args'                => [
                 'file_types' => ['type' => 'array', 'items' => $type_items, 'default' => ['jpg', 'jpeg', 'png']],
                 'date_after' => ['type' => 'string', 'default' => '', 'sanitize_callback' => 'sanitize_text_field'],
@@ -645,7 +578,7 @@ class Ace_Image_Enhancer {
         register_rest_route($ns, '/batch-run', [
             'methods'             => 'POST',
             'callback'            => [$this, 'rest_batch_run'],
-            'permission_callback' => function() { return current_user_can('upload_files'); },
+            'permission_callback' => function() { return current_user_can('manage_options'); },
             'args'                => [
                 'file_types'  => ['type' => 'array', 'items' => $type_items, 'default' => ['jpg', 'jpeg', 'png']],
                 'date_after'  => ['type' => 'string',  'default' => '', 'sanitize_callback' => 'sanitize_text_field'],
@@ -658,7 +591,7 @@ class Ace_Image_Enhancer {
         register_rest_route($ns, '/batch-from-content', [
             'methods'             => 'GET',
             'callback'            => [$this, 'rest_batch_from_content'],
-            'permission_callback' => function() { return current_user_can('upload_files'); },
+            'permission_callback' => function() { return current_user_can('manage_options'); },
             'args'                => [
                 'post_count' => ['type' => 'integer', 'default' => 100, 'minimum' => 1, 'maximum' => 500],
                 'include_pages' => ['type' => 'boolean', 'default' => true],
@@ -668,7 +601,7 @@ class Ace_Image_Enhancer {
         register_rest_route($ns, '/reprocess-single', [
             'methods'             => 'POST',
             'callback'            => [$this, 'rest_reprocess_single'],
-            'permission_callback' => function() { return current_user_can('upload_files'); },
+            'permission_callback' => function() { return current_user_can('manage_options'); },
             'args'                => [
                 'attachment_id' => ['required' => true, 'type' => 'integer', 'minimum' => 1],
             ],
@@ -677,7 +610,7 @@ class Ace_Image_Enhancer {
         register_rest_route($ns, '/rename', [
             'methods'             => 'POST',
             'callback'            => [$this, 'rest_rename'],
-            'permission_callback' => function() { return current_user_can('upload_files'); },
+            'permission_callback' => function() { return current_user_can('manage_options'); },
             'args'                => [
                 'attachment_id' => ['required' => true, 'type' => 'integer', 'minimum' => 1],
                 'new_name'      => ['required' => true, 'type' => 'string',  'sanitize_callback' => 'sanitize_file_name'],
@@ -687,7 +620,7 @@ class Ace_Image_Enhancer {
         register_rest_route($ns, '/batch-from-avatars', [
             'methods'             => 'GET',
             'callback'            => [$this, 'rest_batch_from_avatars'],
-            'permission_callback' => function() { return current_user_can('upload_files'); },
+            'permission_callback' => function() { return current_user_can('manage_options'); },
         ]);
     }
 
@@ -821,7 +754,8 @@ class Ace_Image_Enhancer {
     /** Convert a single attachment to the configured format. */
     private function convert_attachment_to_format(int $attachment_id): array {
         $file = get_attached_file($attachment_id);
-        if (!$file || !file_exists($file)) {
+        if (!current_user_can('edit_post', $attachment_id) || get_post_type($attachment_id) !== 'attachment') return ['status' => 'skipped', 'reason' => 'permission_denied', 'id' => $attachment_id];
+        if (!$file || !$this->safe_upload_path($file) || !file_exists($file)) {
             return ['status' => 'skipped', 'reason' => 'no_source', 'id' => $attachment_id];
         }
 
@@ -1192,7 +1126,7 @@ class Ace_Image_Enhancer {
     // ---------------------------------------------------------
     private function rename_attachment_files(int $attachment_id, string $new_basename) {
         $file = get_attached_file($attachment_id);
-        if (!$file) {
+        if (!$file || !$this->safe_upload_path($file)) {
             return new \WP_Error('no_file', 'Attachment file not found.');
         }
 
@@ -1252,6 +1186,10 @@ class Ace_Image_Enhancer {
             }
         }
 
+        foreach ($rename_map as $old => $new) {
+            if (!$this->safe_upload_path($old) || !$this->safe_upload_path($new, false) || ($old !== $new && file_exists($new))) return new \WP_Error('unsafe_destination', 'A destination already exists or a file is outside uploads.');
+        }
+        $completed = [];
         $renamed = [];
         foreach ($rename_map as $old_path => $new_path) {
             if ($old_path === $new_path) {
@@ -1259,6 +1197,10 @@ class Ace_Image_Enhancer {
             }
             if (@rename($old_path, $new_path)) {
                 $renamed[] = basename($new_path);
+                $completed[$old_path] = $new_path;
+            } else {
+                foreach (array_reverse($completed, true) as $old => $new) rename($new, $old);
+                return new \WP_Error('rename_failed', 'Could not rename all files; earlier moves were rolled back.');
             }
         }
 
@@ -1436,7 +1378,7 @@ class Ace_Image_Enhancer {
             return;
         }
 
-        $ver = '1.4.0';
+        $ver = '1.4.1';
         $base = plugins_url('', __FILE__);
 
         wp_enqueue_style('ace-reprocess', $base . '/css/reprocess.css', [], $ver);
@@ -1473,11 +1415,27 @@ class Ace_Image_Enhancer {
     // support with automatic sanitization to strip dangerous elements.
 
     public function allow_svg_upload($mimes) {
-        // Only add SVG if it's not already present (avoids conflicts with other plugins)
-        if (!isset($mimes['svg'])) {
+        if ($this->get_option('enable_svg') && class_exists('DOMDocument')) {
             $mimes['svg'] = 'image/svg+xml';
         }
+        unset($mimes['svgz']);
         return $mimes;
+    }
+
+    public function sanitize_svg_prefilter($file) {
+        $ext = strtolower(pathinfo($file['name'] ?? '', PATHINFO_EXTENSION));
+        if (!in_array($ext, ['svg', 'svgz'], true) && ($file['type'] ?? '') !== 'image/svg+xml') return $file;
+        if ($ext !== 'svg' || !$this->get_option('enable_svg') || !class_exists('DOMDocument')) {
+            $file['error'] = 'SVG uploads are disabled or unsupported.';
+            return $file;
+        }
+        $path = $file['tmp_name'] ?? '';
+        $content = is_file($path) && filesize($path) <= 5 * 1024 * 1024 ? file_get_contents($path) : false;
+        $clean = $content === false ? false : $this->sanitize_svg_content($content);
+        if ($clean === false || file_put_contents($path, $clean) !== strlen($clean)) {
+            $file['error'] = 'Invalid or unsafe SVG file.';
+        }
+        return $file;
     }
 
     public function fix_svg_mime_check($data, $file, $filename, $mimes, $real_mime) {
@@ -1488,74 +1446,46 @@ class Ace_Image_Enhancer {
         return $data;
     }
 
-    public function sanitize_svg_on_upload($file) {
-        if (!isset($file['file']) || !str_ends_with(strtolower($file['file']), '.svg')) {
-            return $file;
+    private function sanitize_svg_content($svg) {
+        if (!is_string($svg) || strlen($svg) > 5 * 1024 * 1024 || !class_exists('DOMDocument') || preg_match('/<!DOCTYPE|<!ENTITY/i', $svg)) return false;
+        $previous = libxml_use_internal_errors(true);
+        try {
+            $doc = new DOMDocument();
+            if (!$doc->loadXML($svg, LIBXML_NONET) || $doc->doctype || !$doc->documentElement || $doc->documentElement->localName !== 'svg') return false;
+            $elements = ['svg','g','defs','symbol','use','path','rect','circle','ellipse','line','polyline','polygon','text','tspan','title','desc','linearGradient','radialGradient','stop','clipPath','mask','pattern'];
+            $attributes = explode(' ', 'id class viewBox width height x y x1 y1 x2 y2 cx cy r rx ry d points transform fill fill-opacity fill-rule stroke stroke-width stroke-opacity stroke-linecap stroke-linejoin stroke-dasharray stroke-dashoffset opacity offset stop-color stop-opacity gradientUnits gradientTransform spreadMethod fx fy fr clip-path clip-rule mask patternUnits patternContentUnits patternTransform preserveAspectRatio font-size font-family font-weight text-anchor dx dy href');
+            foreach ($doc->getElementsByTagName('*') as $node) {
+                if ($node->namespaceURI !== 'http://www.w3.org/2000/svg' || !in_array($node->localName, $elements, true)) return false;
+                foreach ($node->attributes as $attr) {
+                    if ($attr->namespaceURI === 'http://www.w3.org/2000/xmlns/') continue;
+                    if ($attr->namespaceURI && !($attr->namespaceURI === 'http://www.w3.org/1999/xlink' && $attr->localName === 'href')) return false;
+                    if (!in_array($attr->localName, $attributes, true)) return false;
+                    $value = trim($attr->value);
+                    if ($attr->localName === 'href' && !preg_match('/^#[a-zA-Z_][a-zA-Z0-9_.:-]*$/D', $value)) return false;
+                    if (preg_match('/url\s*\(/i', $value) && !preg_match('/^url\(#[a-zA-Z_][a-zA-Z0-9_.:-]*\)$/D', $value)) return false;
+                    if (strpos($value, chr(92)) !== false || preg_match('/[\x00-\x08]|(?:javascript|data|https?):/i', $value)) return false;
+                }
+            }
+            foreach ($doc->childNodes as $node) if ($node->nodeType === XML_PI_NODE) return false;
+            return $doc->saveXML($doc->documentElement);
+        } finally {
+            libxml_clear_errors();
+            libxml_use_internal_errors($previous);
         }
-
-        $svg_content = file_get_contents($file['file']);
-        
-        if ($svg_content === false) {
-            $file['error'] = 'Could not read SVG file';
-            return $file;
-        }
-
-        // Sanitize SVG to remove potential XSS vectors
-        $sanitized = $this->sanitize_svg_content($svg_content);
-        
-        if ($sanitized === false) {
-            $file['error'] = 'Invalid or potentially malicious SVG file';
-            return $file;
-        }
-
-        file_put_contents($file['file'], $sanitized);
-        
-        return $file;
     }
 
-    private function sanitize_svg_content($svg) {
-        // Remove XML declarations and doctype
-        $svg = preg_replace('/<\?xml.*?\?>/i', '', $svg);
-        $svg = preg_replace('/<!DOCTYPE.*?>/i', '', $svg);
-        
-        // Strip potentially dangerous elements
-        $dangerous_tags = [
-            'script', 'embed', 'object', 'iframe', 'link', 
-            'style', 'foreignObject', 'use'
-        ];
-        
-        foreach ($dangerous_tags as $tag) {
-            $svg = preg_replace('#<' . $tag . '[^>]*?>.*?</' . $tag . '>#is', '', $svg);
-            $svg = preg_replace('#<' . $tag . '[^>]*?/>#is', '', $svg);
+    private function safe_upload_path($path, $existing = true) {
+        $uploads = wp_upload_dir();
+        $root = realpath($uploads['basedir']);
+        $resolved = $existing ? realpath($path) : realpath(dirname($path));
+        if (!$root || !$resolved || is_link($path)) return false;
+        if ($resolved !== $root && strpos($resolved, $root . DIRECTORY_SEPARATOR) !== 0) return false;
+        $cursor = $path;
+        while ($cursor !== dirname($cursor)) {
+            if (is_link($cursor)) return false;
+            $cursor = dirname($cursor);
         }
-        
-        // Remove event handlers (onclick, onload, etc.)
-        $svg = preg_replace('/\s*on[a-z]+\s*=\s*["\'].*?["\']/is', '', $svg);
-        
-        // Remove javascript: and data: protocols from attributes
-        $svg = preg_replace('/\s*(href|src|xlink:href)\s*=\s*["\']?\s*(javascript|data):/is', '', $svg);
-        
-        // Basic XML validation - try SimpleXML first, fallback to DOMDocument
-        libxml_use_internal_errors(true);
-        
-        if (function_exists('simplexml_load_string')) {
-            $dom = simplexml_load_string($svg);
-        } elseif (class_exists('DOMDocument')) {
-            $dom = new DOMDocument();
-            $dom->loadXML($svg);
-        } else {
-            // No XML parser available - reject for safety
-            libxml_clear_errors();
-            return false;
-        }
-        
-        libxml_clear_errors();
-        
-        if ($dom === false) {
-            return false;
-        }
-        
-        return $svg;
+        return true;
     }
 
     // ---------------------------------------------------------
@@ -1652,6 +1582,7 @@ class Ace_Image_Enhancer {
     }
 
     private function safe_generate_webp($source, $destination) {
+        if (!$this->safe_upload_path($source) || !$this->safe_upload_path($destination, false)) return false;
         $mime = $this->get_image_mime_type($source);
         $skip_reason = $this->get_webp_skip_reason($source);
         if ($skip_reason !== '') {
@@ -1740,7 +1671,7 @@ class Ace_Image_Enhancer {
         $src = $file['file'];
         $mime = $this->get_image_mime_type($src);
 
-        if (str_contains((string) ($file['type'] ?? $mime), 'svg')) {
+        if (strpos((string) ($file['type'] ?? $mime), 'svg') !== false) {
             return $file;
         }
 
@@ -1941,14 +1872,14 @@ class Ace_Image_Enhancer {
             'ace-svg-editor',
             plugins_url('css/svg-editor.css', __FILE__),
             [],
-            '1.4.0'
+            '1.4.1'
         );
 
         wp_enqueue_script(
             'ace-svg-editor',
             plugins_url('js/svg-editor.js', __FILE__),
             ['jquery'],
-            '1.4.0',
+            '1.4.1',
             true
         );
 
@@ -2054,7 +1985,8 @@ class Ace_Image_Enhancer {
             wp_send_json_error('Insufficient permissions');
         }
 
-        $attachment_id = intval($_POST['attachment_id']);
+        $attachment_id = isset($_POST['attachment_id']) ? absint($_POST['attachment_id']) : 0;
+        if (!$this->get_option('enable_svg') || !$this->get_option('enable_svg_editor') || get_post_type($attachment_id) !== 'attachment' || !current_user_can('edit_post', $attachment_id)) wp_send_json_error('Permission denied', 403);
 
         if (!$attachment_id) {
             wp_send_json_error('Missing attachment ID');
@@ -2062,11 +1994,11 @@ class Ace_Image_Enhancer {
 
         $file_path = get_attached_file($attachment_id);
 
-        if (!$file_path || pathinfo($file_path, PATHINFO_EXTENSION) !== 'svg') {
+        if (!$file_path || !$this->safe_upload_path($file_path) || strtolower(pathinfo($file_path, PATHINFO_EXTENSION)) !== 'svg') {
             wp_send_json_error('Invalid SVG file');
         }
 
-        $svg_content = file_get_contents($file_path);
+        $svg_content = filesize($file_path) <= 5 * 1024 * 1024 ? $this->sanitize_svg_content(file_get_contents($file_path)) : false;
 
         if ($svg_content === false) {
             wp_send_json_error('Failed to read SVG file');
@@ -2084,8 +2016,9 @@ class Ace_Image_Enhancer {
             wp_send_json_error('Insufficient permissions');
         }
         
-        $attachment_id = intval($_POST['attachment_id']);
-        $svg_content = stripslashes($_POST['svg_content']);
+        $attachment_id = isset($_POST['attachment_id']) ? absint($_POST['attachment_id']) : 0;
+        if (!$this->get_option('enable_svg') || !$this->get_option('enable_svg_editor') || get_post_type($attachment_id) !== 'attachment' || !current_user_can('edit_post', $attachment_id)) wp_send_json_error('Permission denied', 403);
+        $svg_content = isset($_POST['svg_content']) && is_string($_POST['svg_content']) ? wp_unslash($_POST['svg_content']) : '';
         
         if (!$attachment_id || !$svg_content) {
             wp_send_json_error('Missing required data');
@@ -2093,7 +2026,7 @@ class Ace_Image_Enhancer {
         
         $file_path = get_attached_file($attachment_id);
         
-        if (!$file_path || pathinfo($file_path, PATHINFO_EXTENSION) !== 'svg') {
+        if (!$file_path || !$this->safe_upload_path($file_path) || strtolower(pathinfo($file_path, PATHINFO_EXTENSION)) !== 'svg') {
             wp_send_json_error('Invalid SVG file');
         }
         
