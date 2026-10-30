@@ -127,14 +127,14 @@ jQuery(document).ready(function($) {
     });
     
     // Handle close button
-    $(document).on('click', '.ace-svg-editor-close, .ace-svg-cancel, .ace-svg-editor-overlay', function() {
-        const modal = $(this).closest('.ace-svg-editor-modal');
+    $(document).on('click', '.ace-tool-modal-close, .ace-tool-modal-overlay', function() {
+        const modal = $(this).closest('.ace-tool-modal');
         closeEditor(modal);
     });
     
     // Handle save button
     $(document).on('click', '.ace-svg-save', function() {
-        const modal = $(this).closest('.ace-svg-editor-modal');
+        const modal = $(this).closest('.ace-tool-modal');
         const attachmentId = modal.data('attachment-id');
         const iframe = modal.find('iframe')[0];
         
@@ -148,9 +148,9 @@ jQuery(document).ready(function($) {
             }
             
             // Get SVG content
-            svgCanvas.getSvgString()(function(svgString) {
-                saveSvg(attachmentId, svgString, modal);
-            });
+            const svgString = svgCanvas.getSvgString();
+            if (typeof svgString !== 'string') throw new Error('Invalid SVG editor response');
+            saveSvg(attachmentId, svgString, modal);
             
         } catch (error) {
             console.error('Error getting SVG content:', error);
@@ -204,7 +204,7 @@ jQuery(document).ready(function($) {
     // Close modal on ESC key
     $(document).on('keydown', function(e) {
         if (e.key === 'Escape') {
-            $('.ace-svg-editor-modal:visible').each(function() {
+            $('.ace-tool-modal:visible').each(function() {
                 closeEditor($(this));
             });
         }

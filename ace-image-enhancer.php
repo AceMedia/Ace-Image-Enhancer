@@ -47,7 +47,7 @@ class Ace_Image_Enhancer {
         }
         
         // SVG Editor integration for media library (experimental feature)
-        if ($this->get_option('enable_svg_editor')) {
+        if ($this->get_option('enable_svg') && $this->get_option('enable_svg_editor')) {
             add_action('admin_enqueue_scripts', [$this, 'enqueue_svg_editor']);
             add_action('wp_ajax_ace_save_svg', [$this, 'ajax_save_svg']);
             add_action('wp_ajax_ace_load_svg', [$this, 'ajax_load_svg']);
@@ -710,7 +710,7 @@ class Ace_Image_Enhancer {
     }
 
     private function resolve_reprocess_source_file(string $file): ?string {
-        if ($file === '' || !file_exists($file)) {
+        if ($file === '' || !$this->safe_upload_path($file) || !file_exists($file)) {
             return null;
         }
 
@@ -725,7 +725,7 @@ class Ace_Image_Enhancer {
 
         foreach (['jpg', 'jpeg', 'png', 'gif', 'bmp'] as $candidate_ext) {
             $candidate = preg_replace('/\.[a-z0-9]+$/i', '.' . $candidate_ext, $file);
-            if ($candidate && file_exists($candidate)) {
+            if ($candidate && $this->safe_upload_path($candidate) && file_exists($candidate)) {
                 return $candidate;
             }
         }
@@ -778,6 +778,8 @@ class Ace_Image_Enhancer {
         $dest       = preg_replace('/\.[a-z]+$/i', '.' . $target, $file);
         $destination = $this->prepare_reprocess_destination($source_file, $dest);
 
+        if (!$this->safe_upload_path($destination['save_file'], false) || !$this->safe_upload_path($destination['target_file'], false)) return ['status' => 'failed', 'reason' => 'unsafe_destination', 'id' => $attachment_id];
+
         // --- Convert main file ---
         $image = wp_get_image_editor($source_file);
         if (is_wp_error($image)) {
@@ -814,6 +816,7 @@ class Ace_Image_Enhancer {
                 }
                 $new_thumb = preg_replace('/\.[a-z]+$/i', '.' . $target, $old_thumb);
                 $thumb_destination = $this->prepare_reprocess_destination($thumb_source, $new_thumb);
+                if (!$this->safe_upload_path($thumb_destination['save_file'], false) || !$this->safe_upload_path($thumb_destination['target_file'], false)) continue;
                 $thumb_img = wp_get_image_editor($thumb_source);
                 if (is_wp_error($thumb_img)) {
                     continue;
