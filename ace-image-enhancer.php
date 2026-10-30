@@ -725,7 +725,7 @@ class Ace_Image_Enhancer {
         }
 
         if ($destination['replace_after_save']) {
-            if (!$this->filesystem()->move($destination['save_file'], $destination['target_file'], true)) return ['status' => 'failed', 'reason' => 'replace_failed', 'id' => $attachment_id];
+            if (!$this->replace_file($destination['save_file'], $destination['target_file'])) return ['status' => 'failed', 'reason' => 'replace_failed', 'id' => $attachment_id];
         }
         $this->forget_modern_check($destination['target_file']);
 
@@ -758,7 +758,7 @@ class Ace_Image_Enhancer {
 
                 if (!is_wp_error($thumb_saved)) {
                     if ($thumb_destination['replace_after_save']) {
-                        if (!$this->filesystem()->move($thumb_destination['save_file'], $thumb_destination['target_file'], true)) continue;
+                        if (!$this->replace_file($thumb_destination['save_file'], $thumb_destination['target_file'])) continue;
                     }
                     $this->forget_modern_check($thumb_destination['target_file']);
                     if (!$this->get_option('keep_originals') && $this->should_replace_originals() && $thumb_source !== $thumb_destination['target_file'] && file_exists($thumb_source)) {
@@ -1409,6 +1409,13 @@ class Ace_Image_Enhancer {
         }
     }
 
+    private function replace_file($source, $destination) {
+        if (!$this->safe_upload_path($source) || !$this->safe_upload_path($destination, false) || realpath(dirname($source)) !== realpath(dirname($destination))) return false;
+        // WP_Filesystem::move deletes an existing destination before attempting the move.
+        // A same-directory rename preserves the original when replacement fails.
+        return rename($source, $destination); // phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- Atomic replacement must not pre-delete the original.
+    }
+
     private function filesystem() {
         require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-base.php';
         require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-direct.php';
@@ -1984,7 +1991,7 @@ class Ace_Image_Enhancer {
             if ($temporary) wp_delete_file($temporary);
             wp_send_json_error('Failed to prepare SVG file');
         }
-        if (!$this->filesystem()->move($temporary, $file_path, true)) {
+        if (!$this->replace_file($temporary, $file_path)) {
             wp_delete_file($temporary);
             wp_send_json_error('Failed to save file');
         }
