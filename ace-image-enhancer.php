@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Ace Image Enhancer
  * Description: Adds modern image handling (WebP/AVIF) with configurable settings and secure SVG upload support with XSS sanitization.
- * Version: 1.4.1
+ * Version: 1.4.2
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Shane Rounce, AceMedia
@@ -1007,8 +1007,6 @@ class Ace_Image_Enhancer {
                     $resolved = attachment_url_to_postid($avatar_url);
                     if ($resolved > 0) {
                         $attachment_id = $resolved;
-                        // Cache the resolved ID for future requests
-                        update_user_meta($user_id, 'custom_avatar_id', $attachment_id);
                     }
                 }
             }
@@ -1312,7 +1310,7 @@ class Ace_Image_Enhancer {
             return;
         }
 
-        $ver = '1.4.1';
+        $ver = '1.4.2';
         $base = plugins_url('', __FILE__);
 
         wp_enqueue_style('ace-reprocess', $base . '/css/reprocess.css', [], $ver);
@@ -1838,14 +1836,14 @@ class Ace_Image_Enhancer {
             'ace-svg-editor',
             plugins_url('css/svg-editor.css', __FILE__),
             [],
-            '1.4.1'
+            '1.4.2'
         );
 
         wp_enqueue_script(
             'ace-svg-editor',
             plugins_url('js/svg-editor.js', __FILE__),
             ['jquery'],
-            '1.4.1',
+            '1.4.2',
             true
         );
 

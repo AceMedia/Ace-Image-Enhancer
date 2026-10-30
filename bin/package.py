@@ -4,7 +4,7 @@ from pathlib import Path
 import hashlib
 import zipfile
 root = Path(__file__).resolve().parents[1]
-out = root / 'dist' / 'ace-image-enhancer-1.4.1.zip'
+out = root / 'dist' / 'ace-image-enhancer-1.4.2.zip'
 out.parent.mkdir(exist_ok=True)
 with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as archive:
     for path in sorted(root.rglob('*')):
