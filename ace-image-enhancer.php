@@ -1978,13 +1978,17 @@ class Ace_Image_Enhancer {
             wp_send_json_error('Invalid or malicious SVG content');
         }
         
-        // Save the file
-        $result = file_put_contents($file_path, $sanitized_content);
-        
-        if ($result === false) {
+        // Write beside the original, then replace it only after the complete SVG is ready.
+        $temporary = wp_tempnam(basename($file_path), dirname($file_path));
+        if (!$temporary || !$this->safe_upload_path($temporary) || file_put_contents($temporary, $sanitized_content) !== strlen($sanitized_content)) {
+            if ($temporary) wp_delete_file($temporary);
+            wp_send_json_error('Failed to prepare SVG file');
+        }
+        if (!$this->filesystem()->move($temporary, $file_path, true)) {
+            wp_delete_file($temporary);
             wp_send_json_error('Failed to save file');
         }
-        
+
         // Clear any caches
         clean_attachment_cache($attachment_id);
         
