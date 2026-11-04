@@ -38,6 +38,7 @@ class Ace_Image_Enhancer {
             add_filter('wp_get_attachment_image_src', [$this, 'serve_webp_images'], 10, 4);
             // The src swap alone isn't enough: browsers pick from srcset, and content images and
             // cover backgrounds carry hard-coded URLs. Point all of them at the modern sibling.
+            add_filter('wp_calculate_image_srcset_meta', [$this, 'align_srcset_meta'], 10, 3);
             add_filter('wp_calculate_image_srcset', [$this, 'serve_modern_srcset']);
             add_filter('wp_content_img_tag', [$this, 'serve_modern_img_tag']);
             add_filter('render_block', [$this, 'serve_modern_backgrounds']);
@@ -1725,6 +1726,34 @@ class Ace_Image_Enhancer {
         }
 
         return $image;
+    }
+
+    /**
+     * serve_webp_images() swaps the src to its modern sibling, but WordPress only builds a srcset
+     * when the src matches a file named in the metadata. Without this, any image with a modern
+     * main file loses its srcset and every size request gets the full-size image.
+     */
+    public function align_srcset_meta($image_meta, $size_array, $image_src) {
+        if (!is_array($image_meta) || empty($image_meta['file'])) return $image_meta;
+
+        $src = wp_basename((string) wp_parse_url((string) $image_src, PHP_URL_PATH));
+        if (!preg_match('/\.(webp|avif)$/i', $src)) return $image_meta;
+
+        $align = static function ($file) use ($src) {
+            $swapped = preg_replace('/\.(jpe?g|png)$/i', '.' . pathinfo($src, PATHINFO_EXTENSION), (string) $file);
+            return wp_basename($swapped) === $src ? $swapped : $file;
+        };
+
+        $image_meta['file'] = $align($image_meta['file']);
+        if (!empty($image_meta['sizes']) && is_array($image_meta['sizes'])) {
+            foreach ($image_meta['sizes'] as $name => $data) {
+                if (!empty($data['file'])) {
+                    $image_meta['sizes'][$name]['file'] = $align($data['file']);
+                }
+            }
+        }
+
+        return $image_meta;
     }
 
     /** Every srcset candidate WordPress builds from attachment metadata. */
