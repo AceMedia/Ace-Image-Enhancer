@@ -1720,7 +1720,7 @@ class Ace_Image_Enhancer {
         // every size request, so a thumbnail request could serve a multi-MB file - and
         // for already-webp uploads the "swap" resolved to the original itself.
         // Thumbnails must stay thumbnails.)
-        $modern = $this->modern_url((string) $image[0]);
+        $modern = $this->modern_url((string) $image[0], true);
         if ($modern !== null) {
             $image[0] = $modern;
         }
@@ -1760,7 +1760,7 @@ class Ace_Image_Enhancer {
     public function serve_modern_srcset($sources) {
         if (!is_array($sources)) return $sources;
         foreach ($sources as &$source) {
-            if (!empty($source['url']) && ($modern = $this->modern_url((string) $source['url'])) !== null) {
+            if (!empty($source['url']) && ($modern = $this->modern_url((string) $source['url'], true)) !== null) {
                 $source['url'] = $modern;
             }
         }
@@ -1796,18 +1796,30 @@ class Ace_Image_Enhancer {
      * root counts, since content can reference another blog's uploads. The existence check is cached
      * in the object cache for an hour and per request, so a page full of srcsets costs no disk stats.
      */
-    private function modern_url($url) {
+    private function modern_url($url, $is_attachment = false) {
         static $memo = [];
+        static $media_hosts = [];
         if (isset($memo[$url])) return $memo[$url] ?: null;
-        $memo[$url] = false;
 
         if (!preg_match('/\.(jpe?g|png)(?=$|\?)/i', $url)) return null;
         [$root, $prefix] = $this->uploads_root();
         $path = rawurldecode((string) wp_parse_url($url, PHP_URL_PATH));
-        if ($root === '' || strpos($path, $prefix) !== 0 || strpos($path, '..') !== false) return null;
+        if ($root === '' || strpos($path, '..') !== false) return null;
+
+        if (strpos($path, $prefix) === 0) {
+            $relative = substr($path, strlen($prefix));
+        } else {
+            // Offloaded media: the URL's host and root differ from the uploads directory's, but
+            // the year/month path still names the local file. Only hosts WordPress itself gave
+            // us for an attachment count, so a hotlinked image elsewhere is left alone.
+            $host = strtolower((string) wp_parse_url($url, PHP_URL_HOST));
+            if ($is_attachment && $host !== '') $media_hosts[$host] = true;
+            if (empty($media_hosts[$host]) || !preg_match('#/(\d{4}/\d{2}/[^/]+)$#', $path, $tail)) return null;
+            $relative = $tail[1];
+        }
 
         $format = $this->modern_format();
-        $modern_path = wp_normalize_path(preg_replace('/\.(jpe?g|png)$/i', '.' . $format, $root . substr($path, strlen($prefix) - 1)));
+        $modern_path = wp_normalize_path(preg_replace('/\.(jpe?g|png)$/i', '.' . $format, $root . '/' . $relative));
 
         $cache_key  = 'modern_exists_' . $format . '_' . md5($modern_path);
         $has_modern = wp_cache_get($cache_key, 'ace_image_enhancer');
