@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Ace Image Enhancer
  * Description: Adds modern image handling (WebP/AVIF) with configurable settings and secure SVG upload support with XSS sanitization.
- * Version: 1.4.2
+ * Version: 1.4.3
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Shane Rounce, AceMedia
@@ -20,6 +20,9 @@ class Ace_Image_Enhancer {
         // Load settings
         $this->options = get_option('ace_image_enhancer_options', $this->get_default_options());
         
+        // Let Core read native WebP EXIF without depending on output-format settings.
+        add_filter('wp_read_image_metadata_types', [$this, 'enable_webp_exif']);
+
         // Admin settings page
         add_action('admin_menu', [$this, 'add_settings_page']);
         add_action('admin_init', [$this, 'register_settings']);
@@ -62,6 +65,21 @@ class Ace_Image_Enhancer {
 
         // Admin enqueue for batch page and attachment tools
         add_action('admin_enqueue_scripts', [$this, 'enqueue_reprocess_tools']);
+    }
+
+    /**
+     * PHP 8.6 adds native WebP EXIF support. Core still owns metadata extraction
+     * and sanitisation; older runtimes and installations without EXIF keep their
+     * existing image types. Later filters can still remove WebP if required.
+     */
+    public function enable_webp_exif($image_types) {
+        if (PHP_VERSION_ID < 80600 || !function_exists('exif_read_data') || !defined('IMAGETYPE_WEBP') || !is_array($image_types)) {
+            return $image_types;
+        }
+        if (!in_array(IMAGETYPE_WEBP, $image_types, true)) {
+            $image_types[] = IMAGETYPE_WEBP;
+        }
+        return $image_types;
     }
 
     // ---------------------------------------------------------

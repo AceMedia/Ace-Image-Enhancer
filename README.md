@@ -5,6 +5,7 @@ Ace Image Enhancer adds modern image handling to WordPress. It converts uploaded
 ## Features
 
 - Converts uploaded images to WebP or AVIF (AVIF is offered only when your PHP GD build supports it).
+- Lets WordPress read WebP EXIF orientation, credit and copyright on PHP 8.6 when the EXIF extension is available. Older PHP keeps its existing behaviour. Metadata is handled by WordPress, independently of the conversion format setting. Existing files are not rewritten.
 - Configurable image quality (default 85).
 - Option to keep original files, or to replace them with the converted versions.
 - Serves modern formats in image sources, `srcset`, content image tags and block backgrounds.
