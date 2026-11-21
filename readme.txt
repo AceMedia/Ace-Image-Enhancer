@@ -4,7 +4,7 @@ Tags: images, webp, avif, svg, performance
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.4.2
+Stable tag: 1.4.3
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -28,6 +28,10 @@ Adds modern image handling (WebP/AVIF) with configurable settings and secure SVG
 Open an issue on the plugin's GitHub repository.
 
 == Changelog ==
+
+= 1.4.3 =
+* Let WordPress read WebP EXIF orientation, credit and copyright on PHP 8.6 with EXIF enabled.
+* Keep older PHP behaviour and existing image types unchanged.
 
 = 1.4.2 =
 * Keep avatar discovery requests read-only while retaining legacy URL lookup.
