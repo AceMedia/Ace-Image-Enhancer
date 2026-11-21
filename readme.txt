@@ -33,6 +33,10 @@ Open an issue on the plugin's GitHub repository.
 * Let WordPress read WebP EXIF orientation, credit and copyright on PHP 8.6 with EXIF enabled.
 * Keep older PHP behaviour and existing image types unchanged.
 
+= 1.4.2.1 =
+* Offer the PHP 8.6 WebP EXIF hook on the preceding 1.4.2 media-selection profile.
+* Preserve that profile for feature-only canary upgrades; main remains on 1.4.3.
+
 = 1.4.2 =
 * Keep avatar discovery requests read-only while retaining legacy URL lookup.
 

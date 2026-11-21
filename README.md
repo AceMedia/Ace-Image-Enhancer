@@ -53,3 +53,7 @@ GPL-2.0-or-later. See [LICENSE](LICENSE). The bundled SVG-Edit code carries its 
 ## Author and repository
 
 Shane Rounce, AceMedia. Source: https://github.com/AceMedia/Ace-Image-Enhancer
+
+## Feature-only maintenance profile
+
+Tag `v1.4.2.1` adds the same guarded PHP 8.6 WebP EXIF hook to the preceding serving revision `17db40b`. It preserves that revision's media-selection behaviour. Main remains on version 1.4.3, including its existing offloaded-media work. This lets a site test the metadata feature without combining it with a separate change to CDN image selection. Both histories are integrated into main.
