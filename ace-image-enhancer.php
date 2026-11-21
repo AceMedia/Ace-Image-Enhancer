@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Ace Image Enhancer
  * Description: Adds modern image handling (WebP/AVIF) with configurable settings and secure SVG upload support with XSS sanitization.
- * Version: 1.4.3
+ * Version: 1.4.2.1
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Shane Rounce, AceMedia
